@@ -51,25 +51,44 @@
   tr.first td { border-top: 2px solid var(--line); }
   .progress { height: 4px; background: var(--line); border-radius: 4px; overflow: hidden; }
   .progress i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+  .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+  .step { display: flex; gap: 10px; align-items: flex-start; }
+  .step .num { flex: none; width: 26px; height: 26px; border-radius: 50%; background: var(--accent); color: var(--accent-ink); display: grid; place-items: center; font-weight: 700; }
+  .sapbox { margin-top: 14px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); display: grid; gap: 8px; }
+  textarea { width: 100%; font: 12px/1.4 ui-monospace, Menlo, Consolas, monospace; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--text); resize: vertical; }
+  .b { font-size: 11px; padding: 1px 7px; border-radius: 99px; border: 1px solid var(--line); white-space: nowrap; }
+  .b.ok { color: var(--ok); border-color: var(--ok); }
+  .b.po { color: var(--accent); border-color: var(--accent); }
+  .b.bad { color: var(--warn); border-color: var(--warn); }
+  td.note { white-space: normal; min-width: 220px; font-size: 12px; color: var(--muted); }
+  td input.fromsap { border-color: var(--ok); }
+  td.chk { font-weight: 600; color: var(--ok); }
+  td.chk.no { color: var(--warn); }
   @media (max-width: 640px) { header, main { padding-left: 16px; padding-right: 16px; } }
 </style>
 </head>
 <body>
 <header>
   <h1>Trích xuất hóa đơn GTGT → Excel</h1>
-  <p>Chọn các file PDF hóa đơn điện tử (hoặc file .zip / cả thư mục). Mọi xử lý diễn ra ngay trên trình duyệt — không file nào được tải lên máy chủ.</p>
+  <p>Mọi xử lý diễn ra ngay trên trình duyệt — không file nào được tải lên máy chủ.</p>
 </header>
 <main>
   <section class="card">
-    <div id="drop" class="drop">
-      <b>Kéo thả file PDF / ZIP / thư mục vào đây</b><br>
-      <span class="muted">hoặc bấm để chọn file</span>
-      <input id="fileInput" type="file" multiple accept=".pdf,.zip" hidden>
+    <div class="steps">
+      <div class="step"><span class="num">1</span><div><b>Hóa đơn</b><br><span class="muted">Nạp PDF hóa đơn (hoặc .zip / thư mục) → tải Excel theo mẫu. Có thể nạp lại file Excel đã xuất.</span></div></div>
+      <div class="step"><span class="num">2</span><div><b>Inbound SAP</b><br><span class="muted">Dùng danh sách PO SCAF để tải báo cáo ZMME0032 trên SAP, nạp vào đây → điền cột SỐ LƯỢNG (K), CHECK.</span></div></div>
+    </div>
+    <div id="drop" class="drop" style="margin-top:14px">
+      <b>Kéo thả vào đây: PDF hóa đơn · ZIP · thư mục · Excel đã xuất · file Inbound SAP</b><br>
+      <span class="muted">Công cụ tự nhận diện loại file</span>
+      <input id="fileInput" type="file" multiple accept=".pdf,.zip,.xlsx,.xls,.csv" hidden>
       <input id="dirInput" type="file" webkitdirectory hidden>
+      <input id="sapInput" type="file" accept=".xlsx,.xls,.csv" hidden>
     </div>
     <div class="row" style="margin-top:12px">
-      <button id="pickFiles">Chọn file…</button>
+      <button id="pickFiles">Bước 1 · Chọn hóa đơn…</button>
       <button id="pickDir">Chọn thư mục…</button>
+      <button id="pickSap">Bước 2 · Nạp Inbound SAP…</button>
       <button id="clearBtn">Xóa hết</button>
       <span class="muted" id="status"></span>
     </div>
@@ -98,12 +117,26 @@
         <div class="stat"><span class="muted">Dòng hàng</span><b id="sRows">0</b></div>
         <div class="stat"><span class="muted">Tổng số lượng</span><b id="sQty">0</b></div>
         <div class="stat"><span class="muted">Cộng tiền hàng</span><b id="sAmt">0</b></div>
+        <div class="stat"><span class="muted">Khớp SAP</span><b id="sSap">—</b></div>
       </div>
       <button class="primary" id="exportBtn">Tải file Excel</button>
     </div>
+
+    <div class="sapbox" id="poBox">
+      <div class="row" style="justify-content:space-between">
+        <div><b>PO SCAF cần tải inbound trên SAP</b> <span class="muted" id="poCount"></span></div>
+        <button id="copyPo">Sao chép danh sách PO</button>
+      </div>
+      <textarea id="poList" readonly rows="3"></textarea>
+      <div id="sapInfo" class="muted"></div>
+    </div>
+
     <h3 style="margin:16px 0 8px;font-size:15px">File đã đọc</h3>
     <div class="files" id="fileList"></div>
-    <h3 style="margin:16px 0 8px;font-size:15px">Chi tiết (có thể nhập PO SCAX, MO, Số lượng K, TEAM trước khi xuất)</h3>
+    <h3 style="margin:16px 0 8px;font-size:15px">Chi tiết <span class="muted" style="font-weight:normal">(có thể nhập/sửa PO SCAX, MO, Số lượng K, TEAM trước khi xuất)</span></h3>
+    <div class="row" style="margin-bottom:8px">
+      <label><input type="checkbox" id="onlyIssues"> Chỉ hiện dòng chưa khớp / cần kiểm tra</label>
+    </div>
     <div class="tablewrap"><table id="tbl"></table></div>
   </section>
 </main>
@@ -111,6 +144,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="parser.js"></script>
 <script>
 (() => {
@@ -118,7 +152,7 @@
   const $ = id => document.getElementById(id);
   const fmt = n => (n == null || isNaN(n)) ? '' : Number(n).toLocaleString('vi-VN');
 
-  const state = { invoices: new Map(), files: [] }; // key: kyHieu-no
+  const state = { invoices: new Map(), files: [], sap: null }; // key: kyHieu-no
 
   // ---------- TEAM mapping ----------
   const DEFAULT_MAP = [['ARN', 'ARENA'], ['KNIT', 'DEC'], ['WTI', 'DEC']];
@@ -157,11 +191,11 @@
 
   // ---------- File intake ----------
   const drop = $('drop');
-  drop.onclick = () => $('fileInput').click();
+  drop.onclick = e => { if (e.target === drop || e.target.tagName !== 'INPUT') $('fileInput').click(); };
   $('pickFiles').onclick = () => $('fileInput').click();
   $('pickDir').onclick = () => $('dirInput').click();
-  $('fileInput').onchange = e => { handleFiles([...e.target.files]); e.target.value = ''; };
-  $('dirInput').onchange = e => { handleFiles([...e.target.files]); e.target.value = ''; };
+  $('pickSap').onclick = () => $('sapInput').click();
+  ['fileInput', 'dirInput', 'sapInput'].forEach(id => $(id).onchange = e => { handleFiles([...e.target.files]); e.target.value = ''; });
   ['dragenter', 'dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
   ['dragleave', 'drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
   drop.addEventListener('drop', async e => {
@@ -179,14 +213,20 @@
     else files.push(...e.dataTransfer.files);
     handleFiles(files);
   });
-  $('clearBtn').onclick = () => { state.invoices.clear(); state.files = []; render(); };
+  $('clearBtn').onclick = () => { state.invoices.clear(); state.files = []; state.sap = null; render(); };
+  $('onlyIssues').onchange = () => render();
+  $('copyPo').onclick = async () => {
+    const t = $('poList'); t.select();
+    try { await navigator.clipboard.writeText(t.value); } catch (e) { document.execCommand('copy'); }
+    $('copyPo').textContent = 'Đã sao chép ✓'; setTimeout(() => $('copyPo').textContent = 'Sao chép danh sách PO', 1500);
+  };
 
   async function expandZip(file) {
     const zip = await JSZip.loadAsync(file);
     const out = [];
     for (const name of Object.keys(zip.files)) {
       const z = zip.files[name];
-      if (z.dir || !/\.pdf$/i.test(name)) continue;
+      if (z.dir || !/\.(pdf|xlsx|xls)$/i.test(name)) continue;
       out.push({ name: name.split('/').pop(), data: await z.async('uint8array') });
     }
     return out;
@@ -199,11 +239,76 @@
     return pages;
   }
 
+  const isScaf = po => /^45\d{8}$/.test(String(po || ''));
+  function prepRows(inv) {
+    inv.rows.forEach(r => {
+      if (r.scax === undefined) r.scax = isScaf(r.po) ? '' : (r.po || '');
+      if (r.scaf === undefined) r.scaf = isScaf(r.po) ? r.po : '';
+      if (r.mo === undefined) r.mo = '';
+      if (r.k === undefined) r.k = '';
+      if (!r.team) r.team = teamFor(r.ref);
+    });
+  }
+
+  // Excel: tự nhận diện file SAP inbound hay file mẫu đã xuất
+  function handleWorkbook(name, data) {
+    const wb = XLSX.read(data, { type: 'array', cellDates: false });
+    for (const sn of wb.SheetNames) {
+      const aoa = XLSX.utils.sheet_to_json(wb.Sheets[sn], { header: 1, raw: true, defval: '' });
+      const idx = InvoiceParser.buildSapIndex(aoa);
+      if (idx) {
+        // gộp nhiều file SAP: PO trong file mới thay thế PO cũ
+        if (!state.sap) state.sap = { byPo: new Map(), count: 0, names: [] };
+        for (const [po, list] of idx.byPo) state.sap.byPo.set(po, list);
+        state.sap.count = [...state.sap.byPo.values()].reduce((s, l) => s + l.length, 0);
+        state.sap.names = [...state.sap.names.filter(n => n !== name), name];
+        state.sap.name = state.sap.names.join(', ');
+        state.files = state.files.filter(f => !(f.kind === 'sap' && f.name === name));
+        state.files.push({ name, kind: 'sap', status: 'ok', msg: `Inbound SAP — ${idx.count} dòng, ${idx.byPo.size} PO` });
+        return;
+      }
+    }
+    // file mẫu CHI TIẾT HÓA ĐƠN
+    for (const sn of wb.SheetNames) {
+      const aoa = XLSX.utils.sheet_to_json(wb.Sheets[sn], { header: 1, raw: true, defval: '' });
+      const h = aoa.findIndex(r => r && String(r[1]).trim().toUpperCase() === 'HÓA ĐƠN' && String(r[3]).trim().toUpperCase() === 'REF');
+      if (h < 0) continue;
+      const invs = new Map();
+      for (let i = h + 1; i < aoa.length; i++) {
+        const r = aoa[i];
+        if (!r || r[1] === '' || r[4] === '') continue;
+        const no = parseInt(String(r[1]).replace(/\D/g, ''), 10);
+        if (!no) continue;
+        let date = null, dv = r[2];
+        if (dv instanceof Date) date = { d: dv.getDate(), m: dv.getMonth() + 1, y: dv.getFullYear() };
+        else if (typeof dv === 'number') { const d = XLSX.SSF.parse_date_code(dv); date = { d: d.d, m: d.m, y: d.y }; }
+        else if (/(\d{1,2})\/(\d{1,2})\/(\d{4})/.test(String(dv))) { const m = String(dv).match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/); date = { d: +m[1], m: +m[2], y: +m[3] }; }
+        if (!invs.has(no)) invs.set(no, { ok: true, no, kyHieu: '', date, seller: '', file: name, subtotal: null, totalQty: null, rows: [], warnings: [], fromXlsx: true });
+        const qty = +r[4] || 0, price = +r[5] || 0;
+        const scaf = String(r[9] ?? '').trim();
+        invs.get(no).rows.push({
+          stt: +r[0] || invs.get(no).rows.length + 1, ref: String(r[3] ?? '').trim(), qty, price, amount: qty * price,
+          po: scaf || String(r[7] ?? '').trim(), scax: String(r[7] ?? '').trim(), mo: String(r[8] ?? '').trim(), scaf,
+          k: r[10] === '' || r[10] == null ? '' : String(r[10]), team: String(r[14] ?? '').trim(), teamEdited: !!String(r[14] ?? '').trim()
+        });
+      }
+      for (const inv of invs.values()) {
+        const key = `-${inv.no}`;
+        // nếu đã có bản đọc từ PDF cùng số HĐ thì giữ bản PDF
+        if ([...state.invoices.values()].some(x => x.no === inv.no && !x.fromXlsx)) continue;
+        state.invoices.set(key, inv);
+      }
+      state.files.push({ name, status: 'ok', msg: `File Excel đã xuất — ${invs.size} hóa đơn, ${[...invs.values()].reduce((s, i) => s + i.rows.length, 0)} dòng` });
+      return;
+    }
+    state.files.push({ name, status: 'err', msg: 'Không nhận ra file Excel (cần file Inbound SAP có cột "Purchasing Document" hoặc file mẫu CHI TIẾT HÓA ĐƠN).' });
+  }
+
   async function handleFiles(files) {
     const list = [];
     for (const f of files) {
       if (/\.zip$/i.test(f.name)) { try { list.push(...await expandZip(f)); } catch (e) { state.files.push({ name: f.name, status: 'err', msg: 'Không mở được file ZIP' }); } }
-      else if (/\.pdf$/i.test(f.name)) list.push({ name: f.name, file: f });
+      else if (/\.(pdf|xlsx|xls|csv)$/i.test(f.name) && !/^~\$/.test(f.name)) list.push({ name: f.name, file: f });
       else if (/\.(7z|rar)$/i.test(f.name)) state.files.push({ name: f.name, status: 'err', msg: 'Trình duyệt không giải nén được .7z/.rar — hãy giải nén rồi chọn thư mục, hoặc nén lại dạng .zip' });
     }
     let done = 0;
@@ -211,44 +316,84 @@
       $('status').textContent = `Đang đọc ${it.name}…`;
       try {
         const data = it.data || new Uint8Array(await it.file.arrayBuffer());
-        const res = InvoiceParser.parseInvoice(await readPdf(data));
-        if (!res.ok) state.files.push({ name: it.name, status: 'skip', msg: res.reason });
+        if (/\.(xlsx|xls|csv)$/i.test(it.name)) handleWorkbook(it.name, data);
         else {
-          const key = `${res.kyHieu}-${res.no}`;
-          const dup = state.invoices.has(key);
-          res.file = it.name;
-          res.rows.forEach(r => { r.scax = /^45\d{8}$/.test(r.po) ? '' : r.po; r.scaf = /^45\d{8}$/.test(r.po) ? r.po : ''; r.mo = ''; r.k = ''; r.team = teamFor(r.ref); });
-          state.invoices.set(key, res);
-          state.files = state.files.filter(f => f.key !== key);
-          state.files.push({ name: it.name, key, status: res.warnings.length ? 'warn' : 'ok', msg: `HĐ số ${res.no} — ${res.rows.length} dòng — ${fmt(res.subtotal)} đ${dup ? ' (thay bản trùng)' : ''}`, warnings: res.warnings });
+          const res = InvoiceParser.parseInvoice(await readPdf(data));
+          if (!res.ok) state.files.push({ name: it.name, status: 'skip', msg: res.reason });
+          else {
+            const key = `${res.kyHieu}-${res.no}`;
+            const dup = state.invoices.has(key);
+            state.invoices.delete(`-${res.no}`); // thay bản nạp từ Excel nếu có
+            res.file = it.name;
+            prepRows(res);
+            state.invoices.set(key, res);
+            state.files = state.files.filter(f => f.key !== key);
+            state.files.push({ name: it.name, key, status: res.warnings.length ? 'warn' : 'ok', msg: `HĐ số ${res.no} — ${res.rows.length} dòng — ${fmt(res.subtotal)} đ${dup ? ' (thay bản trùng)' : ''}`, warnings: res.warnings });
+          }
         }
       } catch (e) {
         console.error(e);
-        state.files.push({ name: it.name, status: 'err', msg: 'Lỗi đọc PDF: ' + e.message });
+        state.files.push({ name: it.name, status: 'err', msg: 'Lỗi đọc file: ' + e.message });
       }
       done++; $('bar').style.width = (100 * done / list.length) + '%';
     }
     $('status').textContent = list.length ? `Xong ${done} file.` : '';
+    applySap();
     render();
+  }
+
+  // ---------- SAP matching ----------
+  function applySap() {
+    for (const inv of state.invoices.values()) inv.rows.forEach(r => {
+      if (!state.sap) { r.sap = null; return; }
+      if (!r.scaf) { r.sap = { status: 'none', note: '' }; return; }
+      const m = InvoiceParser.matchSap(state.sap, r);
+      r.sap = m;
+      if (m.qty != null && !r.kManual) { r.k = String(m.qty); r.kFromSap = true; }
+    });
+  }
+  function checkOf(r) {
+    const k = parseFloat(String(r.k).replace(/\./g, '').replace(',', '.'));
+    if (String(r.k).trim() === '' || isNaN(k) || !r.qty) return null;
+    const tol = (parseFloat($('tol').value) || 0) / 100;
+    return (r.qty - k) / r.qty <= tol + 1e-12;
+  }
+  const SAP_LABEL = { ok: ['ok', 'Khớp'], po: ['po', 'Khớp theo PO'], noref: ['bad', 'Lệch REF'], nopo: ['bad', 'Chưa có trên SAP'], none: ['', 'PO SCAX'] };
+  function sapNote(r) {
+    if (!r.sap) return '';
+    const parts = [];
+    if (r.sap.status === 'nopo' || r.sap.status === 'noref') parts.push(r.sap.note);
+    else if (r.sap.note) parts.push(r.sap.note);
+    return parts.join('; ');
   }
 
   // ---------- Render ----------
   function sortedInvoices() { return [...state.invoices.values()].sort((a, b) => (a.no || 0) - (b.no || 0)); }
+  function keyOf(inv) { return [...state.invoices.entries()].find(([, v]) => v === inv)[0]; }
   function render() {
     const invs = sortedInvoices();
     $('resultCard').hidden = !state.files.length;
-    let rows = 0, qty = 0, amt = 0;
-    invs.forEach(i => { rows += i.rows.length; i.rows.forEach(r => { qty += r.qty; amt += r.amount; }); });
+    let rows = 0, qty = 0, amt = 0, matched = 0, sapable = 0;
+    invs.forEach(i => { rows += i.rows.length; i.rows.forEach(r => { qty += r.qty; amt += r.amount; if (r.scaf) sapable++; if (r.sap && (r.sap.status === 'ok' || r.sap.status === 'po')) matched++; }); });
     $('sInv').textContent = invs.length; $('sRows').textContent = rows; $('sQty').textContent = fmt(qty); $('sAmt').textContent = fmt(amt);
+    $('sSap').textContent = state.sap ? `${matched}/${sapable}` : '—';
     $('exportBtn').disabled = !rows;
+
+    // danh sách PO cho bước 2
+    const pos = [...new Set(invs.flatMap(i => i.rows.map(r => r.scaf)).filter(Boolean))].sort();
+    const missing = state.sap ? pos.filter(p => !state.sap.byPo.has(p)) : pos;
+    $('poBox').hidden = !pos.length;
+    $('poList').value = missing.join('\n');
+    $('poCount').textContent = state.sap ? `— còn ${missing.length}/${pos.length} PO chưa có trong file SAP đã nạp` : `— ${pos.length} PO`;
+    $('sapInfo').textContent = state.sap ? `Đã nạp ${state.sap.name}: ${state.sap.count} dòng, ${state.sap.byPo.size} PO. Khớp ${matched}/${sapable} dòng hóa đơn có PO SCAF.` : 'Chưa nạp file Inbound SAP. Dán danh sách PO trên vào SAP (ZMME0032), xuất Excel rồi nạp vào đây. Có thể nạp nhiều file SAP — dữ liệu được gộp.';
 
     const fl = $('fileList'); fl.innerHTML = '';
     const label = { ok: 'Đã đọc', warn: 'Cần kiểm tra', skip: 'Bỏ qua', err: 'Lỗi' };
-    const sorted = [...state.files].sort((a, b) => a.name.localeCompare(b.name));
+    const sorted = [...state.files].sort((a, b) => (a.kind === 'sap' ? -1 : 0) - (b.kind === 'sap' ? -1 : 0) || a.name.localeCompare(b.name));
     const skipped = sorted.filter(f => f.status === 'skip');
     sorted.filter(f => f.status !== 'skip').forEach(f => {
       const d = document.createElement('div'); d.className = 'file';
-      d.innerHTML = `<span class="tag ${f.status === 'err' ? 'warn' : f.status}">${label[f.status]}</span><div><div>${esc(f.name)}</div><div class="muted">${esc(f.msg || '')}</div>${(f.warnings || []).length ? '<ul class="warnlist">' + f.warnings.map(w => '<li>' + esc(w) + '</li>').join('') + '</ul>' : ''}</div>`;
+      d.innerHTML = `<span class="tag ${f.status === 'err' ? 'warn' : f.status}">${f.kind === 'sap' ? 'SAP' : label[f.status]}</span><div><div>${esc(f.name)}</div><div class="muted">${esc(f.msg || '')}</div>${(f.warnings || []).length ? '<ul class="warnlist">' + f.warnings.map(w => '<li>' + esc(w) + '</li>').join('') + '</ul>' : ''}</div>`;
       fl.appendChild(d);
     });
     if (skipped.length) {
@@ -257,35 +402,46 @@
       fl.appendChild(d);
     }
 
+    const only = $('onlyIssues').checked;
     const t = $('tbl');
-    const head = ['STT', 'HÓA ĐƠN', 'NGÀY', 'REF', 'SỐ LƯỢNG', 'GIÁ TIỀN', 'THÀNH TIỀN', 'PO SCAX', 'MO', 'PO SCAF', 'SỐ LƯỢNG (K)', 'TEAM'];
+    const head = ['STT', 'HÓA ĐƠN', 'NGÀY', 'REF', 'SỐ LƯỢNG', 'GIÁ TIỀN', 'THÀNH TIỀN', 'PO SCAX', 'MO', 'PO SCAF', 'SỐ LƯỢNG (K)', 'CHECK', 'TEAM', 'SAP', 'GHI CHÚ'];
     let html = '<thead><tr>' + head.map(h => `<th>${h}</th>`).join('') + '</tr></thead><tbody>';
-    invs.forEach(inv => inv.rows.forEach((r, idx) => {
+    invs.forEach(inv => { const key = keyOf(inv); inv.rows.forEach((r, idx) => {
+      const ck = checkOf(r);
+      const issue = ck === false || (r.sap && !['ok', 'none'].includes(r.sap.status)) || (r.sap && r.sap.note);
+      if (only && !issue) return;
+      const sl = r.sap ? SAP_LABEL[r.sap.status] : null;
       html += `<tr class="${idx === 0 ? 'first' : ''}"><td class="n">${r.stt}</td><td>${inv.no}</td><td>${dstr(inv.date)}</td><td>${esc(r.ref)}</td>
         <td class="n">${fmt(r.qty)}</td><td class="n">${fmt(r.price)}</td><td class="n">${fmt(r.qty * r.price)}</td>
-        <td><input data-k="scax" data-i="${inv.kyHieu}-${inv.no}" data-r="${idx}" value="${esc(r.scax)}"></td>
-        <td><input class="s" data-k="mo" data-i="${inv.kyHieu}-${inv.no}" data-r="${idx}" value="${esc(r.mo)}"></td>
+        <td><input data-k="scax" data-i="${key}" data-r="${idx}" value="${esc(r.scax)}"></td>
+        <td><input class="s" data-k="mo" data-i="${key}" data-r="${idx}" value="${esc(r.mo)}"></td>
         <td>${esc(r.scaf)}</td>
-        <td><input class="s" data-k="k" data-i="${inv.kyHieu}-${inv.no}" data-r="${idx}" value="${esc(r.k)}"></td>
-        <td><input class="s" data-k="team" data-i="${inv.kyHieu}-${inv.no}" data-r="${idx}" value="${esc(r.team)}"></td></tr>`;
-    }));
+        <td><input class="s ${r.kFromSap && !r.kManual ? 'fromsap' : ''}" data-k="k" data-i="${key}" data-r="${idx}" value="${esc(r.k)}"></td>
+        <td class="chk ${ck === false ? 'no' : ''}">${ck == null ? '' : ck ? 'OK' : '✕'}</td>
+        <td><input class="s" data-k="team" data-i="${key}" data-r="${idx}" value="${esc(r.team)}"></td>
+        <td>${sl && sl[1] ? `<span class="b ${sl[0]}">${sl[1]}</span>` : ''}</td>
+        <td class="note">${esc(sapNote(r))}</td></tr>`;
+    }); });
     t.innerHTML = html + '</tbody>';
-    t.querySelectorAll('input').forEach(inp => inp.oninput = () => {
+    t.querySelectorAll('input').forEach(inp => inp.onchange = () => {
       const r = state.invoices.get(inp.dataset.i).rows[+inp.dataset.r];
       r[inp.dataset.k] = inp.value;
       if (inp.dataset.k === 'team') r.teamEdited = true;
+      if (inp.dataset.k === 'k') r.kManual = true;
+      render();
     });
   }
   function esc(s) { return String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
   function dstr(d) { return d ? `${String(d.d).padStart(2, '0')}/${String(d.m).padStart(2, '0')}/${d.y}` : ''; }
+  $('tol').addEventListener('input', () => render());
 
   // ---------- Excel export ----------
   $('exportBtn').onclick = async () => {
     const tol = (parseFloat($('tol').value) || 0) / 100;
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('Sheet1', { views: [{ state: 'frozen', ySplit: 1 }] });
-    const headers = ['STT', 'HÓA ĐƠN', 'NGÀY', 'REF', 'SỐ LƯỢNG', 'GIÁ TIỀN', 'THÀNH TIỀN', 'PO SCAX', 'MO ', 'PO SCAF', 'SỐ LƯỢNG', 'CHECK', 'CHÊNH ', 'TỶ LỆ ', 'TEAM'];
-    const widths = [6, 10, 12, 28, 12, 11, 15, 16, 10, 13, 12, 8, 10, 9, 10];
+    const headers = ['STT', 'HÓA ĐƠN', 'NGÀY', 'REF', 'SỐ LƯỢNG', 'GIÁ TIỀN', 'THÀNH TIỀN', 'PO SCAX', 'MO ', 'PO SCAF', 'SỐ LƯỢNG', 'CHECK', 'CHÊNH ', 'TỶ LỆ ', 'TEAM', 'GHI CHÚ SAP'];
+    const widths = [6, 10, 12, 28, 12, 11, 15, 16, 10, 13, 12, 8, 10, 9, 10, 40];
     ws.addRow(headers);
     widths.forEach((w, i) => ws.getColumn(i + 1).width = w);
     const hdr = ws.getRow(1);
@@ -313,12 +469,13 @@
       row.getCell(13).value = { formula: `IF(K${rn}="","",E${rn}-K${rn})` };
       row.getCell(14).value = { formula: `IF(K${rn}="","",M${rn}/E${rn})` };
       row.getCell(15).value = r.team || null;
+      if (r.sap && r.sap.status !== 'none') { const lb = SAP_LABEL[r.sap.status][1]; const nt = sapNote(r); row.getCell(16).value = nt ? `${lb}: ${nt}` : lb; if (r.sap.status === 'nopo' || r.sap.status === 'noref' || r.sap.note) row.getCell(16).font = { color: { argb: 'FFB54708' } }; }
       [5, 7, 11, 13].forEach(c => row.getCell(c).numFmt = '#,##0');
       row.getCell(6).numFmt = '#,##0';
       row.getCell(14).numFmt = '0.0%';
       rn++;
     }));
-    ws.autoFilter = { from: 'A1', to: `O${rn - 1}` };
+    ws.autoFilter = { from: 'A1', to: `P${rn - 1}` };
 
     // Sheet đối chiếu tổng
     const s2 = wb.addWorksheet('ĐỐI CHIẾU');
@@ -333,6 +490,14 @@
       [7, 8, 9, 10].forEach(c => row.getCell(c).numFmt = '#,##0');
       r2++;
     });
+
+    // Sheet danh sách PO để tải inbound SAP
+    const s3 = wb.addWorksheet('PO SAP');
+    s3.addRow(['PO SCAF', 'SỐ DÒNG HĐ', 'TỔNG SL HĐ', 'CÓ TRONG FILE SAP']).font = { bold: true };
+    [14, 12, 14, 18].forEach((w, i) => s3.getColumn(i + 1).width = w);
+    const agg = new Map();
+    sortedInvoices().forEach(inv => inv.rows.forEach(r => { if (!r.scaf) return; const a = agg.get(r.scaf) || { n: 0, q: 0 }; a.n++; a.q += r.qty; agg.set(r.scaf, a); }));
+    [...agg.keys()].sort().forEach(po => { const a = agg.get(po); const rr = s3.addRow([Number(po), a.n, a.q, state.sap ? (state.sap.byPo.has(po) ? 'Có' : 'Chưa') : '']); rr.getCell(3).numFmt = '#,##0'; });
 
     const buf = await wb.xlsx.writeBuffer();
     const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });

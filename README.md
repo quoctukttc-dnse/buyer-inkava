@@ -4,14 +4,21 @@ Web tĩnh (chạy trên GitHub Pages) đọc các file **PDF hóa đơn điện 
 
 Mọi xử lý chạy **ngay trong trình duyệt** — file hóa đơn không bị tải lên máy chủ nào.
 
-## Cách dùng
+## Quy trình 2 bước
 
-1. Mở trang web, kéo thả các file PDF (hoặc file `.zip`, hoặc cả thư mục) vào ô.
-   - File `.7z` / `.rar` cần giải nén trước (hoặc nén lại thành `.zip`).
-   - Biên bản (BBTL) dạng scan sẽ tự động bị bỏ qua.
-2. Kiểm tra danh sách: hóa đơn nào lệch tổng tiền / tổng số lượng sẽ được đánh dấu **Cần kiểm tra**.
-3. (Tuỳ chọn) nhập PO SCAX, MO, Số lượng (K), sửa TEAM ngay trong bảng.
-4. Bấm **Tải file Excel**.
+**Bước 1 — Hóa đơn**
+1. Kéo thả các file PDF hóa đơn (hoặc `.zip`, hoặc cả thư mục). File `.7z`/`.rar` cần giải nén trước. Biên bản scan tự bỏ qua.
+2. Kiểm tra danh sách: hóa đơn lệch tổng tiền / tổng số lượng được đánh dấu **Cần kiểm tra**.
+3. Bấm **Tải file Excel** → được file theo mẫu (cột K trống) + sheet **PO SAP** liệt kê các PO SCAF.
+
+**Bước 2 — Inbound SAP**
+1. Bấm **Sao chép danh sách PO** (hoặc lấy ở sheet *PO SAP*), dán vào màn hình chọn của báo cáo **ZMME0032** trên SAP, xuất Excel.
+2. Mở lại công cụ, nạp **file Excel đã xuất ở bước 1** (hoặc nạp lại PDF) và **file inbound SAP** — công cụ tự nhận diện loại file.
+3. Cột **SỐ LƯỢNG (K)** tự điền = cột *Quantity* trên SAP, khớp theo **PO + REF** (bỏ qua khoảng trắng/gạch nối; PO chỉ có 1 dòng thì khớp theo PO). CHECK, CHÊNH, TỶ LỆ tự tính.
+4. Có thể nạp nhiều file SAP — dữ liệu được gộp. Ô danh sách PO chỉ còn các PO **chưa có** trong file SAP đã nạp.
+5. Bấm **Tải file Excel**.
+
+Cột **GHI CHÚ SAP** (P): `Khớp`, `Khớp theo PO`, `Lệch REF`, `Chưa có trên SAP`, và cảnh báo khi đơn giá SAP (*Gross Price*) khác đơn giá hóa đơn.
 
 ## Cột trong file Excel (Sheet1)
 
@@ -26,10 +33,12 @@ Mọi xử lý chạy **ngay trong trình duyệt** — file hóa đơn không b
 | H PO SCAX | Số PO không phải dạng 45xxxxxxxx (vd 16395) — hoặc nhập tay | HĐ / nhập |
 | I MO | nhập tay | nhập |
 | J PO SCAF | Số PO dạng 45xxxxxxxx | HĐ |
-| K SỐ LƯỢNG | Số lượng đối chiếu (PO/SAP) — nhập tay | nhập |
+| K SỐ LƯỢNG | *Quantity* của dòng PO trên SAP (ZMME0032) | SAP / nhập |
 | L CHECK | `OK` nếu (E−K)/E ≤ ngưỡng (mặc định 3%) | công thức |
 | M CHÊNH / N TỶ LỆ | `=E−K`, `=M/E` | công thức |
 | O TEAM | Theo tiền tố REF: ARN→ARENA, KNIT/WTI→DEC (sửa được trong *Thiết lập*) | quy tắc |
+
+Sheet **PO SAP**: danh sách PO SCAF cần tải inbound, đánh dấu PO đã có trong file SAP.
 
 Sheet **ĐỐI CHIẾU**: mỗi hóa đơn một dòng — tổng số lượng, cộng tiền hàng trên HĐ so với tổng các dòng đã trích xuất (cột LỆCH phải bằng 0).
 
@@ -42,5 +51,5 @@ Sheet **ĐỐI CHIẾU**: mỗi hóa đơn một dòng — tổng số lượng,
 
 ## Cấu trúc
 
-- `index.html` — giao diện, đọc PDF (pdf.js), xuất Excel (ExcelJS), đọc ZIP (JSZip) — thư viện tải từ cdnjs.
-- `parser.js` — logic nhận diện dòng hàng: gom chữ theo tọa độ, tìm dòng `STT … ĐVT Số lượng Đơn giá Thành tiền`, ghép với dòng `PO… - REF` gần nhất.
+- `index.html` — giao diện, đọc PDF (pdf.js), xuất Excel (ExcelJS), đọc ZIP (JSZip), đọc Excel (SheetJS) — thư viện tải từ cdnjs.
+- `parser.js` — đọc hóa đơn PDF và khớp file inbound SAP. Đọc hóa đơn: gom chữ theo tọa độ, tìm dòng `STT … ĐVT Số lượng Đơn giá Thành tiền`, ghép với dòng `PO… - REF` gần nhất.

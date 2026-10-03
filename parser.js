@@ -115,7 +115,79 @@
     return { ok: true, no: no ? parseInt(no, 10) : null, noText: no || '', kyHieu, date, seller: seller.trim(), buyer: buyer.trim(), subtotal, totalQty, rows, warnings };
   }
 
-  const api = { parseInvoice, vnNum, groupLines };
+
+  // ---------- SAP inbound (ZMME0032) ----------
+  const normRef = s => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const toNum = v => {
+    if (v == null || v === '') return null;
+    if (typeof v === 'number') return v;
+    const s = String(v).trim();
+    // "1.234,5" (VN) hoặc "1,234.5" (EN) hoặc "1234"
+    if (/^-?\d{1,3}(\.\d{3})+(,\d+)?$/.test(s)) return vnNum(s);
+    const n = parseFloat(s.replace(/,/g, ''));
+    return isNaN(n) ? null : n;
+  };
+
+  /** aoa: mảng 2 chiều (dòng đầu tiên chứa 'Purchasing Document' là tiêu đề). Trả về null nếu không phải file SAP inbound. */
+  function buildSapIndex(aoa) {
+    let h = -1;
+    for (let i = 0; i < Math.min(aoa.length, 15); i++) {
+      if ((aoa[i] || []).some(c => /^\s*Purchasing\s+Doc/i.test(String(c || '')))) { h = i; break; }
+    }
+    if (h < 0) return null;
+    const head = aoa[h].map(c => String(c || '').trim().toLowerCase());
+    const col = (...names) => { for (const n of names) { const i = head.indexOf(n.toLowerCase()); if (i >= 0) return i; } return -1; };
+    const C = {
+      po: col('Purchasing Document'), ref: col('Supplier Ref'), desc: col('Material Description'),
+      qty: col('Quantity'), price: col('Gross Price'), delivered: col('Delivered Qty'), remain: col('Remain Quantity'),
+      invQty: col('Invoice Quantity'), supplier: col('Partner Name'), material: col('Material')
+    };
+    if (C.po < 0 || C.qty < 0) return null;
+    const byPo = new Map();
+    let count = 0;
+    for (let i = h + 1; i < aoa.length; i++) {
+      const r = aoa[i] || [];
+      const po = String(r[C.po] ?? '').trim().replace(/\.0+$/, '');
+      if (!po) continue;
+      const ref = C.ref >= 0 ? String(r[C.ref] ?? '').trim() : '';
+      const desc = C.desc >= 0 ? String(r[C.desc] ?? '').trim() : '';
+      const it = {
+        po, ref, desc, refN: normRef(ref || desc), descN: normRef(desc),
+        qty: toNum(r[C.qty]) || 0, price: C.price >= 0 ? toNum(r[C.price]) : null,
+        delivered: C.delivered >= 0 ? toNum(r[C.delivered]) : null, remain: C.remain >= 0 ? toNum(r[C.remain]) : null,
+        invQty: C.invQty >= 0 ? toNum(r[C.invQty]) : null, supplier: C.supplier >= 0 ? String(r[C.supplier] ?? '') : '',
+        material: C.material >= 0 ? String(r[C.material] ?? '') : ''
+      };
+      if (!byPo.has(po)) byPo.set(po, []);
+      byPo.get(po).push(it);
+      count++;
+    }
+    return { byPo, count };
+  }
+
+  /** row: {scaf|po, ref, price}. Trả về {status:'ok'|'po'|'none'|'nopo', qty, items, note} */
+  function matchSap(index, row) {
+    const po = String(row.scaf || row.po || '').trim();
+    if (!po) return { status: 'none', note: 'Không có PO SCAF' };
+    const list = index.byPo.get(po);
+    if (!list) return { status: 'nopo', note: 'PO không có trong file SAP' };
+    const r = normRef(row.ref);
+    let hit = list.filter(a => a.refN === r);
+    let how = 'ok';
+    if (!hit.length && r) hit = list.filter(a => a.refN && (a.refN.startsWith(r) || r.startsWith(a.refN) || a.descN.startsWith(r)));
+    if (!hit.length && list.length === 1) { hit = list; how = 'po'; }
+    if (!hit.length) return { status: 'noref', note: `PO có ${list.length} dòng trên SAP nhưng không khớp REF` };
+    const qty = hit.reduce((s, a) => s + (a.qty || 0), 0);
+    const notes = [];
+    if (how === 'po') notes.push(`Khớp theo PO (REF SAP: ${hit[0].ref || hit[0].desc})`);
+    if (hit.length > 1) notes.push(`Cộng ${hit.length} dòng SAP`);
+    const prices = [...new Set(hit.map(a => a.price).filter(p => p != null))];
+    if (row.price != null && prices.length && prices.some(p => Math.abs(p - row.price) > 0.5)) notes.push(`Giá SAP ${prices.map(p => p.toLocaleString('vi-VN')).join('/')} ≠ giá HĐ ${Number(row.price).toLocaleString('vi-VN')}`);
+    const remain = hit.reduce((s, a) => s + (a.remain || 0), 0);
+    return { status: how, qty, items: hit, remain, note: notes.join('; ') };
+  }
+
+  const api = { parseInvoice, vnNum, groupLines, buildSapIndex, matchSap, normRef };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.InvoiceParser = api;
 })(typeof window !== 'undefined' ? window : this);
