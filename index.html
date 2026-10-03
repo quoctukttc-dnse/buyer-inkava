@@ -79,19 +79,19 @@
   <section class="card">
     <div class="steps">
       <div class="step"><span class="num">1</span><div><b>Hóa đơn</b><br><span class="muted">Nạp PDF hóa đơn (hoặc .zip / thư mục) → tải Excel theo mẫu. Có thể nạp lại file Excel đã xuất.</span></div></div>
-      <div class="step"><span class="num">2</span><div><b>Inbound SAP</b><br><span class="muted">Dùng danh sách PO SCAF để tải báo cáo ZMME0032 trên SAP, nạp vào đây → điền cột SỐ LƯỢNG (K), CHECK.</span></div></div>
+      <div class="step"><span class="num">2</span><div><b>Inbound SAP</b><br><span class="muted">Dùng danh sách PO SCAF để tải báo cáo ZMME0032 (inbound) và báo cáo PO có số MO trên SAP, nạp vào đây → điền cột SỐ LƯỢNG (K), CHECK và MO.</span></div></div>
     </div>
     <div id="drop" class="drop" style="margin-top:14px">
-      <b>Kéo thả vào đây: PDF hóa đơn · ZIP · thư mục · Excel đã xuất · file Inbound SAP</b><br>
+      <b>Kéo thả vào đây: PDF hóa đơn · ZIP · thư mục · Excel đã xuất · file Inbound SAP · báo cáo MO</b><br>
       <span class="muted">Công cụ tự nhận diện loại file</span>
       <input id="fileInput" type="file" multiple accept=".pdf,.zip,.xlsx,.xls,.csv" hidden>
       <input id="dirInput" type="file" webkitdirectory hidden>
-      <input id="sapInput" type="file" accept=".xlsx,.xls,.csv" hidden>
+      <input id="sapInput" type="file" multiple accept=".xlsx,.xls,.csv" hidden>
     </div>
     <div class="row" style="margin-top:12px">
       <button id="pickFiles">Bước 1 · Chọn hóa đơn…</button>
       <button id="pickDir">Chọn thư mục…</button>
-      <button id="pickSap">Bước 2 · Nạp Inbound SAP…</button>
+      <button id="pickSap">Bước 2 · Nạp file SAP (inbound / MO)…</button>
       <button id="clearBtn">Xóa hết</button>
       <span class="muted" id="status"></span>
     </div>
@@ -121,6 +121,7 @@
         <div class="stat"><span class="muted">Tổng số lượng</span><b id="sQty">0</b></div>
         <div class="stat"><span class="muted">Cộng tiền hàng</span><b id="sAmt">0</b></div>
         <div class="stat"><span class="muted">Khớp SAP</span><b id="sSap">—</b></div>
+        <div class="stat"><span class="muted">Có MO</span><b id="sMo">—</b></div>
       </div>
       <button class="primary" id="exportBtn">Tải file Excel</button>
     </div>
@@ -132,6 +133,7 @@
       </div>
       <textarea id="poList" readonly rows="3"></textarea>
       <div id="sapInfo" class="muted"></div>
+      <div id="moInfo" class="muted"></div>
     </div>
 
     <h3 style="margin:16px 0 8px;font-size:15px">File đã đọc</h3>
@@ -148,7 +150,249 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="parser.js"></script>
+<script>
+/* ===== parser.js (nhúng trực tiếp) ===== */
+/* Bộ trích xuất hóa đơn GTGT điện tử (PDF có lớp chữ, ví dụ MISA meInvoice).
+ * Dùng chung cho trình duyệt (window.InvoiceParser) và Node (module.exports) để kiểm thử. */
+(function (root) {
+  'use strict';
+
+  // "12.681,00" -> 12681 ; "16.881" -> 16881 ; "1.003,50" -> 1003.5
+  function vnNum(s) {
+    return parseFloat(String(s).replace(/\./g, '').replace(',', '.'));
+  }
+
+  // Gom các mẩu chữ của 1 trang thành từng dòng theo tọa độ y.
+  function groupLines(items) {
+    const toks = items
+      .filter(it => it.str && it.str.trim() !== '')
+      .map(it => ({ s: it.str, x: it.transform[4], y: it.transform[5], w: it.width || 0 }))
+      .sort((a, b) => b.y - a.y || a.x - b.x);
+    const lines = [];
+    for (const t of toks) {
+      const ln = lines.find(l => Math.abs(l.y - t.y) < 2.5);
+      if (ln) ln.toks.push(t); else lines.push({ y: t.y, toks: [t] });
+    }
+    for (const l of lines) {
+      l.toks.sort((a, b) => a.x - b.x);
+      l.text = l.toks.map(t => t.s).join(' ').replace(/\s+/g, ' ').trim();
+    }
+    return lines.sort((a, b) => b.y - a.y);
+  }
+
+  const NUM = '\\d{1,3}(?:\\.\\d{3})*(?:,\\d+)?';
+  // ... <ĐVT> <Số lượng> <Đơn giá> <Thành tiền> ở cuối dòng
+  const ROW_RE = new RegExp('^\\s*(\\d{1,4})\\b(.*?)\\b([A-Za-zÀ-ỹ]{2,10})\\s+(' + NUM + ')\\s+(' + NUM + ')\\s+(' + NUM + ')\\s*$');
+  const PO_RE = /PO\s*:?\s*(\d{4,12})\s*[-–:]?\s*(.*)$/i;
+  const STOP_WORDS = /\s+(Serigraphy|Printing|Embroidery|Embroider|Thêu|In\s|Heat|Transfer|Service|Dịch vụ|Gia công)\b.*$/i;
+
+  function cleanRef(rest) {
+    let r = (rest || '').replace(STOP_WORDS, '').trim();
+    r = r.replace(/[-–\s]+$/, '').trim();
+    return r;
+  }
+
+  /** pages: mảng các mảng textItems (định dạng pdf.js getTextContent().items) */
+  function parseInvoice(pages) {
+    const all = pages.map(groupLines);
+    const fullText = all.map(p => p.map(l => l.text).join('\n')).join('\n');
+
+    const isInvoice = /H[ÓO]A\s*Đ[ƠO]N/i.test(fullText) && /Số\s*:?\s*\d{5,}/i.test(fullText);
+    if (!isInvoice) return { ok: false, reason: 'Không phải hóa đơn điện tử dạng chữ (có thể là bản scan / biên bản).' };
+
+    const no = (fullText.match(/Số\s*:\s*0*(\d+)/i) || [])[1];
+    const kyHieu = (fullText.match(/Ký\s*hiệu\s*:\s*([A-Z0-9]+)/i) || [])[1] || '';
+    const dm = fullText.match(/Ngày\s+(\d{1,2})\s+tháng\s+(\d{1,2})\s+năm\s+(\d{4})/i);
+    const date = dm ? { d: +dm[1], m: +dm[2], y: +dm[3] } : null;
+    const seller = (fullText.match(/\n\s*(C[ÔO]NG TY[^\n]+)/) || [])[1] || '';
+    const buyer = (fullText.match(/Tên đơn vị\s*:\s*([^\n]+)/i) || [])[1] || '';
+    const subtotalM = fullText.match(/Cộng tiền hàng\s*:?\s*(-?[\d.]+)/i);
+    const subtotal = subtotalM ? vnNum(subtotalM[1]) : null;
+    const totalQtyM = fullText.match(/Tổng số lượng\s*:?\s*([\d.,]+)/i);
+    const totalQty = totalQtyM ? vnNum(totalQtyM[1]) : null;
+
+    const rows = [];
+    all.forEach((lines) => {
+      // vùng bảng: sau dòng tiêu đề "STT ... Thành tiền", trước "Tổng số lượng"/"Cộng tiền hàng"
+      let start = lines.findIndex(l => /STT/.test(l.text) && /Thành tiền/i.test(l.text));
+      if (start < 0) return;
+      let end = lines.findIndex((l, i) => i > start && /(Tổng số lượng|Cộng tiền hàng|^\s*\d+\/\d+\s*$)/i.test(l.text));
+      if (end < 0) end = lines.length;
+      const body = lines.slice(start + 1, end);
+
+      const numRows = [];
+      const poLines = [];
+      body.forEach(l => {
+        const m = l.text.match(ROW_RE);
+        if (m) numRows.push({ y: l.y, stt: +m[1], desc: m[2].trim(), unit: m[3], qty: vnNum(m[4]), price: vnNum(m[5]), amount: vnNum(m[6]) });
+        const pm = l.text.match(PO_RE);
+        if (pm) {
+          // lấy phần PO từ đúng vị trí bắt đầu "PO" trong dòng
+          const idx = l.text.search(/PO\s*:?\s*\d/i);
+          const seg = l.text.slice(idx).replace(ROW_RE, '');
+          const pm2 = seg.match(PO_RE) || pm;
+          let rest = pm2[2];
+          // cắt bỏ phần ĐVT/số liệu nếu nằm chung dòng
+          rest = rest.replace(new RegExp('\\s+[A-Za-zÀ-ỹ]{2,10}\\s+' + NUM + '\\s+' + NUM + '\\s+' + NUM + '\\s*$'), '');
+          poLines.push({ y: l.y, po: pm2[1], ref: cleanRef(rest) });
+        }
+      });
+
+      // ghép mỗi dòng số liệu với dòng PO gần nhất (theo y), ưu tiên dòng PO nằm trên hoặc cùng dòng
+      const used = new Set();
+      numRows.forEach(r => {
+        let best = -1, bestD = 1e9;
+        poLines.forEach((p, i) => {
+          if (used.has(i)) return;
+          let d = Math.abs(p.y - r.y);
+          if (p.y < r.y - 1) d += 3; // PO nằm dưới: phạt nhẹ
+          if (d < bestD) { bestD = d; best = i; }
+        });
+        let po = '', ref = '';
+        if (best >= 0 && bestD < 40) { used.add(best); po = poLines[best].po; ref = poLines[best].ref; }
+        else { ref = cleanRef(r.desc); }
+        rows.push({ stt: r.stt, unit: r.unit, qty: r.qty, price: r.price, amount: r.amount, po, ref });
+      });
+    });
+
+    const sumAmount = rows.reduce((s, r) => s + r.amount, 0);
+    const sumQty = rows.reduce((s, r) => s + r.qty, 0);
+    const warnings = [];
+    if (!rows.length) warnings.push('Không đọc được dòng hàng nào.');
+    if (subtotal != null && Math.abs(sumAmount - subtotal) > 1) warnings.push(`Tổng thành tiền các dòng (${sumAmount.toLocaleString('vi-VN')}) ≠ Cộng tiền hàng (${subtotal.toLocaleString('vi-VN')}).`);
+    if (totalQty != null && Math.abs(sumQty - totalQty) > 0.001) warnings.push(`Tổng số lượng các dòng (${sumQty.toLocaleString('vi-VN')}) ≠ Tổng số lượng trên HĐ (${totalQty.toLocaleString('vi-VN')}).`);
+    rows.forEach(r => {
+      if (Math.abs(r.qty * r.price - r.amount) > 1) warnings.push(`Dòng ${r.stt}: SL × Đơn giá ≠ Thành tiền trên HĐ (${r.amount.toLocaleString('vi-VN')}).`);
+      if (!r.po) warnings.push(`Dòng ${r.stt}: không tìm thấy số PO.`);
+    });
+
+    return { ok: true, no: no ? parseInt(no, 10) : null, noText: no || '', kyHieu, date, seller: seller.trim(), buyer: buyer.trim(), subtotal, totalQty, rows, warnings };
+  }
+
+
+  // ---------- SAP inbound (ZMME0032) ----------
+  const normRef = s => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const toNum = v => {
+    if (v == null || v === '') return null;
+    if (typeof v === 'number') return v;
+    const s = String(v).trim();
+    // "1.234,5" (VN) hoặc "1,234.5" (EN) hoặc "1234"
+    if (/^-?\d{1,3}(\.\d{3})+(,\d+)?$/.test(s)) return vnNum(s);
+    const n = parseFloat(s.replace(/,/g, ''));
+    return isNaN(n) ? null : n;
+  };
+
+  /** aoa: mảng 2 chiều (dòng đầu tiên chứa 'Purchasing Document' là tiêu đề). Trả về null nếu không phải file SAP inbound. */
+  function buildSapIndex(aoa) {
+    let h = -1;
+    for (let i = 0; i < Math.min(aoa.length, 15); i++) {
+      if ((aoa[i] || []).some(c => /^\s*Purchasing\s+Doc/i.test(String(c || '')))) { h = i; break; }
+    }
+    if (h < 0) return null;
+    const head = aoa[h].map(c => String(c || '').trim().toLowerCase());
+    const col = (...names) => { for (const n of names) { const i = head.indexOf(n.toLowerCase()); if (i >= 0) return i; } return -1; };
+    const C = {
+      po: col('Purchasing Document'), ref: col('Supplier Ref'), desc: col('Material Description'),
+      qty: col('Quantity'), price: col('Gross Price'), delivered: col('Delivered Qty'), remain: col('Remain Quantity'),
+      invQty: col('Invoice Quantity'), supplier: col('Partner Name'), material: col('Material')
+    };
+    if (C.po < 0 || C.qty < 0) return null;
+    if (head.includes('reference') && C.delivered < 0) return null; // đây là báo cáo MO, không phải inbound
+    const byPo = new Map();
+    let count = 0;
+    for (let i = h + 1; i < aoa.length; i++) {
+      const r = aoa[i] || [];
+      const po = String(r[C.po] ?? '').trim().replace(/\.0+$/, '');
+      if (!po) continue;
+      const ref = C.ref >= 0 ? String(r[C.ref] ?? '').trim() : '';
+      const desc = C.desc >= 0 ? String(r[C.desc] ?? '').trim() : '';
+      const it = {
+        po, ref, desc, refN: normRef(ref || desc), descN: normRef(desc),
+        qty: toNum(r[C.qty]) || 0, price: C.price >= 0 ? toNum(r[C.price]) : null,
+        delivered: C.delivered >= 0 ? toNum(r[C.delivered]) : null, remain: C.remain >= 0 ? toNum(r[C.remain]) : null,
+        invQty: C.invQty >= 0 ? toNum(r[C.invQty]) : null, supplier: C.supplier >= 0 ? String(r[C.supplier] ?? '') : '',
+        material: C.material >= 0 ? String(r[C.material] ?? '') : ''
+      };
+      if (!byPo.has(po)) byPo.set(po, []);
+      byPo.get(po).push(it);
+      count++;
+    }
+    return { byPo, count };
+  }
+
+  /** row: {scaf|po, ref, price}. Trả về {status:'ok'|'po'|'none'|'nopo', qty, items, note} */
+  function matchSap(index, row) {
+    const po = String(row.scaf || row.po || '').trim();
+    if (!po) return { status: 'none', note: 'Không có PO SCAF' };
+    const list = index.byPo.get(po);
+    if (!list) return { status: 'nopo', note: 'PO không có trong file SAP' };
+    const r = normRef(row.ref);
+    let hit = list.filter(a => a.refN === r);
+    let how = 'ok';
+    if (!hit.length && r) hit = list.filter(a => a.refN && (a.refN.startsWith(r) || r.startsWith(a.refN) || a.descN.startsWith(r)));
+    if (!hit.length && list.length === 1) { hit = list; how = 'po'; }
+    if (!hit.length) return { status: 'noref', note: `PO có ${list.length} dòng trên SAP nhưng không khớp REF` };
+    const qty = hit.reduce((s, a) => s + (a.qty || 0), 0);
+    const notes = [];
+    if (how === 'po') notes.push(`Khớp theo PO (REF SAP: ${hit[0].ref || hit[0].desc})`);
+    if (hit.length > 1) notes.push(`Cộng ${hit.length} dòng SAP`);
+    const prices = [...new Set(hit.map(a => a.price).filter(p => p != null))];
+    if (row.price != null && prices.length && prices.some(p => Math.abs(p - row.price) > 0.5)) notes.push(`Giá SAP ${prices.map(p => p.toLocaleString('vi-VN')).join('/')} ≠ giá HĐ ${Number(row.price).toLocaleString('vi-VN')}`);
+    const remain = hit.reduce((s, a) => s + (a.remain || 0), 0);
+    return { status: how, qty, items: hit, remain, note: notes.join('; ') };
+  }
+
+  // ---------- Báo cáo PO có số MO (cột "Reference") ----------
+  function buildMoIndex(aoa) {
+    let h = -1;
+    for (let i = 0; i < Math.min(aoa.length, 15); i++) {
+      const row = (aoa[i] || []).map(c => String(c || '').trim().toLowerCase());
+      if (row.includes('purchasing document') && row.includes('reference')) { h = i; break; }
+    }
+    if (h < 0) return null;
+    const head = aoa[h].map(c => String(c || '').trim().toLowerCase());
+    const cPo = head.indexOf('purchasing document');
+    let cMo = head.indexOf('reference');
+    const cRef = head.indexOf('supplier ref');
+    // kiểm tra cột Reference có chứa số MO; nếu không, tìm cột khác có dạng MOxxxx
+    const looksMo = c => { let n = 0, m = 0; for (let i = h + 1; i < Math.min(aoa.length, h + 200); i++) { const v = String((aoa[i] || [])[c] ?? '').trim(); if (v) { n++; if (/^MO\s*\d+/i.test(v)) m++; } } return n > 0 && m / n > 0.5; };
+    if (!looksMo(cMo)) { cMo = -1; for (let c = 0; c < head.length; c++) if (looksMo(c)) { cMo = c; break; } }
+    if (cMo < 0) return null;
+    const byPo = new Map(); // po -> [{refN, mo}]
+    let count = 0;
+    for (let i = h + 1; i < aoa.length; i++) {
+      const r = aoa[i] || [];
+      const po = String(r[cPo] ?? '').trim().replace(/\.0+$/, '');
+      const mo = String(r[cMo] ?? '').trim();
+      if (!po || !mo) continue;
+      if (!byPo.has(po)) byPo.set(po, []);
+      byPo.get(po).push({ refN: cRef >= 0 ? normRef(r[cRef]) : '', mo });
+      count++;
+    }
+    return { byPo, count };
+  }
+
+  /** Trả về {mo, note} cho 1 dòng HĐ */
+  function matchMo(index, row) {
+    const po = String(row.scaf || '').trim();
+    if (!po) return null;
+    const list = index.byPo.get(po);
+    if (!list) return { mo: '', note: 'PO không có trong báo cáo MO' };
+    let mos = [...new Set(list.map(a => a.mo))];
+    if (mos.length > 1) {
+      const r = normRef(row.ref);
+      const hit = [...new Set(list.filter(a => a.refN && (a.refN === r || a.refN.startsWith(r) || r.startsWith(a.refN))).map(a => a.mo))];
+      if (hit.length) mos = hit;
+    }
+    return { mo: mos.join(', '), note: mos.length > 1 ? `PO có ${mos.length} MO` : '' };
+  }
+
+  const api = { parseInvoice, vnNum, groupLines, buildSapIndex, matchSap, normRef, buildMoIndex, matchMo };
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  else root.InvoiceParser = api;
+})(typeof window !== 'undefined' ? window : this);
+
+</script>
 <script>
 /* Đọc lại file ZIP (xlsx) có Central Directory sai kích thước — thường gặp ở file xuất từ SAP.
  * Quét tuần tự các Local File Header, giải nén bằng DecompressionStream, trả về {tên: Uint8Array}. */
@@ -210,7 +454,7 @@
   const $ = id => document.getElementById(id);
   const fmt = n => (n == null || isNaN(n)) ? '' : Number(n).toLocaleString('vi-VN');
 
-  const state = { invoices: new Map(), files: [], sap: null }; // key: kyHieu-no
+  const state = { invoices: new Map(), files: [], sap: null, mo: null }; // key: kyHieu-no
 
   // ---------- TEAM mapping ----------
   const DEFAULT_MAP = [['ARN', 'ARENA'], ['KNIT', 'DEC'], ['WTI', 'DEC']];
@@ -277,7 +521,7 @@
     if (!files.length) files.push(...plainFiles);
     handleFiles(files);
   });
-  $('clearBtn').onclick = () => { state.invoices.clear(); state.files = []; state.sap = null; render(); };
+  $('clearBtn').onclick = () => { state.invoices.clear(); state.files = []; state.sap = null; state.mo = null; render(); };
   $('onlyIssues').onchange = () => render();
   $('copyPo').onclick = async () => {
     const t = $('poList'); t.select();
@@ -331,6 +575,16 @@
     const wb = await readWorkbook(data);
     for (const sn of wb.SheetNames) {
       const aoa = XLSX.utils.sheet_to_json(wb.Sheets[sn], { header: 1, raw: true, defval: '' });
+      const mi = InvoiceParser.buildMoIndex(aoa);
+      if (mi) {
+        if (!state.mo) state.mo = { byPo: new Map(), count: 0, names: [] };
+        for (const [po, list] of mi.byPo) state.mo.byPo.set(po, list);
+        state.mo.count = [...state.mo.byPo.values()].reduce((s, l) => s + l.length, 0);
+        state.mo.names = [...state.mo.names.filter(n => n !== name), name];
+        state.files = state.files.filter(f => f.name !== name);
+        state.files.push({ name, kind: 'mo', status: 'ok', msg: `Báo cáo MO — ${mi.count} dòng, ${mi.byPo.size} PO` });
+        return;
+      }
       const idx = InvoiceParser.buildSapIndex(aoa);
       if (idx) {
         // gộp nhiều file SAP: PO trong file mới thay thế PO cũ
@@ -430,6 +684,12 @@
       r.sap = m;
       if (m.qty != null && !r.kManual) { r.k = String(m.qty); r.kFromSap = true; }
     });
+    for (const inv of state.invoices.values()) inv.rows.forEach(r => {
+      if (!state.mo || !r.scaf) { r.moMatch = null; return; }
+      const m = InvoiceParser.matchMo(state.mo, r);
+      r.moMatch = m;
+      if (m && m.mo && !r.moManual) { r.mo = m.mo; r.moFromFile = true; }
+    });
   }
   function devOf(r) {
     const k = parseFloat(String(r.k).replace(/\./g, '').replace(',', '.'));
@@ -445,8 +705,9 @@
   }
   const SAP_LABEL = { ok: ['ok', 'Khớp'], po: ['po', 'Khớp theo PO'], noref: ['bad', 'Lệch REF'], nopo: ['bad', 'Chưa có trên SAP'], none: ['', 'PO SCAX'] };
   function sapNote(r) {
-    if (!r.sap) return '';
     const parts = [];
+    if (r.moMatch && r.moMatch.note) parts.push(r.moMatch.note);
+    if (!r.sap) return parts.join('; ');
     if (r.sap.status === 'nopo' || r.sap.status === 'noref') parts.push(r.sap.note);
     else if (r.sap.note) parts.push(r.sap.note);
     return parts.join('; ');
@@ -462,6 +723,8 @@
     invs.forEach(i => { rows += i.rows.length; i.rows.forEach(r => { qty += r.qty; amt += r.amount; if (r.scaf) sapable++; if (r.sap && (r.sap.status === 'ok' || r.sap.status === 'po')) matched++; }); });
     $('sInv').textContent = invs.length; $('sRows').textContent = rows; $('sQty').textContent = fmt(qty); $('sAmt').textContent = fmt(amt);
     $('sSap').textContent = state.sap ? `${matched}/${sapable}` : '—';
+    let moHas = 0; invs.forEach(i => i.rows.forEach(r => { if (r.scaf && r.mo) moHas++; }));
+    $('sMo').textContent = state.mo ? `${moHas}/${sapable}` : '—';
     $('exportBtn').disabled = !rows;
 
     // danh sách PO cho bước 2
@@ -470,15 +733,17 @@
     $('poBox').hidden = !pos.length;
     $('poList').value = missing.join('\n');
     $('poCount').textContent = state.sap ? `— còn ${missing.length}/${pos.length} PO chưa có trong file SAP đã nạp` : `— ${pos.length} PO`;
+    const moMissing = state.mo ? pos.filter(p => !state.mo.byPo.has(p)) : [];
+    $('moInfo').textContent = state.mo ? `Đã nạp báo cáo MO (${state.mo.names.join(', ')}): ${state.mo.byPo.size} PO. Điền MO cho ${moHas}/${sapable} dòng.` + (moMissing.length ? ` PO chưa có MO: ${moMissing.join(', ')}` : '') : 'Chưa nạp báo cáo MO (file EXPORT có cột "Reference" = số MO) — thả vào để tự điền cột MO.';
     $('sapInfo').textContent = state.sap ? `Đã nạp ${state.sap.name}: ${state.sap.count} dòng, ${state.sap.byPo.size} PO. Khớp ${matched}/${sapable} dòng hóa đơn có PO SCAF.` : 'Chưa nạp file Inbound SAP. Dán danh sách PO trên vào SAP (ZMME0032), xuất Excel rồi nạp vào đây. Có thể nạp nhiều file SAP — dữ liệu được gộp.';
 
     const fl = $('fileList'); fl.innerHTML = '';
     const label = { ok: 'Đã đọc', warn: 'Cần kiểm tra', skip: 'Bỏ qua', err: 'Lỗi' };
-    const sorted = [...state.files].sort((a, b) => (a.kind === 'sap' ? -1 : 0) - (b.kind === 'sap' ? -1 : 0) || a.name.localeCompare(b.name));
+    const sorted = [...state.files].sort((a, b) => (a.kind ? -1 : 0) - (b.kind ? -1 : 0) || a.name.localeCompare(b.name));
     const skipped = sorted.filter(f => f.status === 'skip');
     sorted.filter(f => f.status !== 'skip').forEach(f => {
       const d = document.createElement('div'); d.className = 'file';
-      d.innerHTML = `<span class="tag ${f.status === 'err' ? 'warn' : f.status}">${f.kind === 'sap' ? 'SAP' : label[f.status]}</span><div><div>${esc(f.name)}</div><div class="muted">${esc(f.msg || '')}</div>${(f.warnings || []).length ? '<ul class="warnlist">' + f.warnings.map(w => '<li>' + esc(w) + '</li>').join('') + '</ul>' : ''}</div>`;
+      d.innerHTML = `<span class="tag ${f.status === 'err' ? 'warn' : f.status}">${f.kind === 'sap' ? 'SAP' : f.kind === 'mo' ? 'MO' : label[f.status]}</span><div><div>${esc(f.name)}</div><div class="muted">${esc(f.msg || '')}</div>${(f.warnings || []).length ? '<ul class="warnlist">' + f.warnings.map(w => '<li>' + esc(w) + '</li>').join('') + '</ul>' : ''}</div>`;
       fl.appendChild(d);
     });
     if (skipped.length) {
@@ -494,13 +759,13 @@
     invs.forEach(inv => { const key = keyOf(inv); inv.rows.forEach((r, idx) => {
       const ck = checkOf(r);
       const dv = devOf(r);
-      const issue = ck === false || (r.sap && !['ok', 'none'].includes(r.sap.status)) || (r.sap && r.sap.note);
+      const issue = ck === false || (r.sap && !['ok', 'none'].includes(r.sap.status)) || (r.sap && r.sap.note) || (state.mo && r.scaf && !r.mo) || (r.moMatch && r.moMatch.note);
       if (only && !issue) return;
       const sl = r.sap ? SAP_LABEL[r.sap.status] : null;
       html += `<tr class="${idx === 0 ? 'first' : ''}"><td class="n">${r.stt}</td><td>${inv.no}</td><td>${dstr(inv.date)}</td><td>${esc(r.ref)}</td>
         <td class="n">${fmt(r.qty)}</td><td class="n">${fmt(r.price)}</td><td class="n">${fmt(r.qty * r.price)}</td>
         <td><input data-k="scax" data-i="${key}" data-r="${idx}" value="${esc(r.scax)}"></td>
-        <td><input class="s" data-k="mo" data-i="${key}" data-r="${idx}" value="${esc(r.mo)}"></td>
+        <td><input class="s ${r.moFromFile && !r.moManual ? 'fromsap' : ''}" data-k="mo" data-i="${key}" data-r="${idx}" value="${esc(r.mo)}"></td>
         <td>${esc(r.scaf)}</td>
         <td><input class="s ${r.kFromSap && !r.kManual ? 'fromsap' : ''}" data-k="k" data-i="${key}" data-r="${idx}" value="${esc(r.k)}"></td>
         <td class="chk ${ck === false ? 'no' : ''}" ${dv ? `title="Chênh (E − K): ${fmt(dv.diff)} = ${pctFmt(dv.pct)} số lượng HĐ"` : ''}>${ck == null ? '' : (ck ? 'OK' : '✕') + (dv && dv.diff !== 0 ? `<span class="pct">${pctFmt(dv.pct)}</span>` : '')}</td>
@@ -514,6 +779,7 @@
       r[inp.dataset.k] = inp.value;
       if (inp.dataset.k === 'team') r.teamEdited = true;
       if (inp.dataset.k === 'k') r.kManual = true;
+      if (inp.dataset.k === 'mo') r.moManual = true;
       render();
     });
   }
@@ -555,7 +821,8 @@
       row.getCell(13).value = { formula: `IF(K${rn}="","",E${rn}-K${rn})` };
       row.getCell(14).value = { formula: `IF(K${rn}="","",M${rn}/E${rn})` };
       row.getCell(15).value = r.team || null;
-      if (r.sap && r.sap.status !== 'none') { const lb = SAP_LABEL[r.sap.status][1]; const nt = sapNote(r); row.getCell(16).value = nt ? `${lb}: ${nt}` : lb; if (r.sap.status === 'nopo' || r.sap.status === 'noref' || r.sap.note) row.getCell(16).font = { color: { argb: 'FFB54708' } }; }
+      if ((!r.sap || r.sap.status === 'none') && r.moMatch && r.moMatch.note) { row.getCell(16).value = r.moMatch.note; row.getCell(16).font = { color: { argb: 'FFB54708' } }; }
+      if (r.sap && r.sap.status !== 'none') { const lb = SAP_LABEL[r.sap.status][1]; const nt = sapNote(r); row.getCell(16).value = nt ? `${lb} | ${nt}` : lb; if (r.sap.status === 'nopo' || r.sap.status === 'noref' || r.sap.note) row.getCell(16).font = { color: { argb: 'FFB54708' } }; }
       [5, 7, 11, 13].forEach(c => row.getCell(c).numFmt = '#,##0');
       row.getCell(6).numFmt = '#,##0';
       row.getCell(14).numFmt = '0.0%';
