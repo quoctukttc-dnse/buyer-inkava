@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trích xuất hóa đơn → Excel</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #fff; --text: #1d2330; --muted: #667085; --line: #e3e6eb;
+    --accent: #1f6feb; --accent-ink: #fff; --ok: #1a7f37; --warn: #b54708; --warn-bg: #fff6e5; --err: #c62828;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0f1218; --card:#171b22; --text:#e6e8ec; --muted:#9aa3b2; --line:#2a303a; --accent:#4d8dff; --warn-bg:#2d2414; --warn:#f0b35a; --ok:#4cc36b; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); }
+  header { padding: 20px 24px 8px; max-width: 1400px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  header p { margin: 0; color: var(--muted); }
+  main { max-width: 1400px; margin: 0 auto; padding: 12px 24px 40px; display: grid; gap: 16px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  .drop { border: 2px dashed var(--line); border-radius: 10px; padding: 28px; text-align: center; cursor: pointer; transition: .15s; }
+  .drop.over { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+  .drop b { font-size: 15px; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  button, .btn { border: 1px solid var(--line); background: var(--card); color: var(--text); padding: 8px 14px; border-radius: 8px; cursor: pointer; font: inherit; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  input[type=text], input[type=number] { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); }
+  .muted { color: var(--muted); }
+  .stats { display: flex; gap: 24px; flex-wrap: wrap; }
+  .stat b { display: block; font-size: 20px; }
+  details summary { cursor: pointer; font-weight: 600; }
+  .map { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px; margin-top: 10px; }
+  .map div { display: flex; gap: 6px; align-items: center; }
+  .map input { width: 100%; }
+  .files { display: grid; gap: 6px; }
+  .file { display: flex; gap: 10px; align-items: baseline; padding: 6px 10px; border-radius: 6px; background: var(--bg); }
+  .file .tag { font-size: 12px; padding: 1px 8px; border-radius: 99px; border: 1px solid var(--line); white-space: nowrap; }
+  .tag.ok { color: var(--ok); border-color: var(--ok); }
+  .tag.skip { color: var(--muted); }
+  .tag.warn { color: var(--warn); border-color: var(--warn); }
+  .warnlist { margin: 4px 0 0 0; padding-left: 18px; color: var(--warn); font-size: 13px; }
+  .tablewrap { overflow: auto; max-height: 70vh; border: 1px solid var(--line); border-radius: 8px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { border-bottom: 1px solid var(--line); padding: 4px 8px; white-space: nowrap; }
+  th { position: sticky; top: 0; background: var(--card); text-align: left; z-index: 1; }
+  td.n { text-align: right; font-variant-numeric: tabular-nums; }
+  td input { width: 120px; padding: 3px 6px; }
+  td input.s { width: 80px; }
+  tr.first td { border-top: 2px solid var(--line); }
+  .progress { height: 4px; background: var(--line); border-radius: 4px; overflow: hidden; }
+  .progress i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+  @media (max-width: 640px) { header, main { padding-left: 16px; padding-right: 16px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Trích xuất hóa đơn GTGT → Excel</h1>
+  <p>Chọn các file PDF hóa đơn điện tử (hoặc file .zip / cả thư mục). Mọi xử lý diễn ra ngay trên trình duyệt — không file nào được tải lên máy chủ.</p>
+</header>
+<main>
+  <section class="card">
+    <div id="drop" class="drop">
+      <b>Kéo thả file PDF / ZIP / thư mục vào đây</b><br>
+      <span class="muted">hoặc bấm để chọn file</span>
+      <input id="fileInput" type="file" multiple accept=".pdf,.zip" hidden>
+      <input id="dirInput" type="file" webkitdirectory hidden>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button id="pickFiles">Chọn file…</button>
+      <button id="pickDir">Chọn thư mục…</button>
+      <button id="clearBtn">Xóa hết</button>
+      <span class="muted" id="status"></span>
+    </div>
+    <div class="progress" style="margin-top:10px"><i id="bar"></i></div>
+  </section>
+
+  <section class="card">
+    <details>
+      <summary>Thiết lập</summary>
+      <p class="muted" style="margin:8px 0 0">TEAM được gán theo tiền tố của REF (ví dụ <code>ARN-…</code> → ARENA). Có thể sửa trực tiếp trong bảng.</p>
+      <div class="map" id="teamMap"></div>
+      <div class="row" style="margin-top:8px"><button id="addMap">+ Thêm quy tắc</button></div>
+      <div class="row" style="margin-top:12px">
+        <label>Ngưỡng CHECK “OK”: chênh lệch (E − K)/E ≤ <input id="tol" type="number" step="0.1" value="3" style="width:70px"> %</label>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <label>Tên file Excel: <input id="fname" type="text" value="CHI TIẾT HÓA ĐƠN" style="width:260px"></label>
+      </div>
+    </details>
+  </section>
+
+  <section class="card" id="resultCard" hidden>
+    <div class="row" style="justify-content:space-between">
+      <div class="stats">
+        <div class="stat"><span class="muted">Hóa đơn</span><b id="sInv">0</b></div>
+        <div class="stat"><span class="muted">Dòng hàng</span><b id="sRows">0</b></div>
+        <div class="stat"><span class="muted">Tổng số lượng</span><b id="sQty">0</b></div>
+        <div class="stat"><span class="muted">Cộng tiền hàng</span><b id="sAmt">0</b></div>
+      </div>
+      <button class="primary" id="exportBtn">Tải file Excel</button>
+    </div>
+    <h3 style="margin:16px 0 8px;font-size:15px">File đã đọc</h3>
+    <div class="files" id="fileList"></div>
+    <h3 style="margin:16px 0 8px;font-size:15px">Chi tiết (có thể nhập PO SCAX, MO, Số lượng K, TEAM trước khi xuất)</h3>
+    <div class="tablewrap"><table id="tbl"></table></div>
+  </section>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="parser.js"></script>
+<script>
+(() => {
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  const $ = id => document.getElementById(id);
+  const fmt = n => (n == null || isNaN(n)) ? '' : Number(n).toLocaleString('vi-VN');
+
+  const state = { invoices: new Map(), files: [] }; // key: kyHieu-no
+
+  // ---------- TEAM mapping ----------
+  const DEFAULT_MAP = [['ARN', 'ARENA'], ['KNIT', 'DEC'], ['WTI', 'DEC']];
+  let teamMap;
+  try { teamMap = JSON.parse(localStorage.getItem('teamMap')) || DEFAULT_MAP; } catch (e) { teamMap = DEFAULT_MAP; }
+  function saveMap() { try { localStorage.setItem('teamMap', JSON.stringify(teamMap)); } catch (e) {} }
+  function renderMap() {
+    const box = $('teamMap'); box.innerHTML = '';
+    teamMap.forEach((pair, i) => {
+      const d = document.createElement('div');
+      d.innerHTML = `<input type="text" value="${pair[0]}" placeholder="Tiền tố REF"> → <input type="text" value="${pair[1]}" placeholder="TEAM"> <button title="Xóa">×</button>`;
+      const [a, b] = d.querySelectorAll('input');
+      a.oninput = () => { pair[0] = a.value.trim(); saveMap(); applyTeams(); };
+      b.oninput = () => { pair[1] = b.value.trim(); saveMap(); applyTeams(); };
+      d.querySelector('button').onclick = () => { teamMap.splice(i, 1); saveMap(); renderMap(); applyTeams(); };
+      box.appendChild(d);
+    });
+  }
+  $('addMap').onclick = () => { teamMap.push(['', '']); renderMap(); };
+  function teamFor(ref) {
+    const r = (ref || '').toUpperCase().replace(/\s+/g, '');
+    let best = '';
+    let bestLen = 0;
+    for (const [p, t] of teamMap) {
+      const pp = (p || '').toUpperCase().replace(/\s+/g, '');
+      if (pp && r.startsWith(pp) && pp.length > bestLen) { best = t; bestLen = pp.length; }
+    }
+    return best;
+  }
+  function applyTeams() {
+    for (const inv of state.invoices.values()) inv.rows.forEach(r => { if (!r.teamEdited) r.team = teamFor(r.ref); });
+    render();
+  }
+  try { const t = localStorage.getItem('tol'); if (t) $('tol').value = t; } catch (e) {}
+  $('tol').oninput = () => { try { localStorage.setItem('tol', $('tol').value); } catch (e) {} };
+
+  // ---------- File intake ----------
+  const drop = $('drop');
+  drop.onclick = () => $('fileInput').click();
+  $('pickFiles').onclick = () => $('fileInput').click();
+  $('pickDir').onclick = () => $('dirInput').click();
+  $('fileInput').onchange = e => { handleFiles([...e.target.files]); e.target.value = ''; };
+  $('dirInput').onchange = e => { handleFiles([...e.target.files]); e.target.value = ''; };
+  ['dragenter', 'dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
+  ['dragleave', 'drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
+  drop.addEventListener('drop', async e => {
+    const items = [...(e.dataTransfer.items || [])];
+    const files = [];
+    const walk = entry => new Promise(res => {
+      if (entry.isFile) entry.file(f => { files.push(f); res(); });
+      else if (entry.isDirectory) {
+        const rd = entry.createReader(); const all = [];
+        const read = () => rd.readEntries(async ents => { if (!ents.length) { for (const en of all) await walk(en); res(); } else { all.push(...ents); read(); } });
+        read();
+      } else res();
+    });
+    if (items.length && items[0].webkitGetAsEntry) { for (const it of items) { const en = it.webkitGetAsEntry(); if (en) await walk(en); } }
+    else files.push(...e.dataTransfer.files);
+    handleFiles(files);
+  });
+  $('clearBtn').onclick = () => { state.invoices.clear(); state.files = []; render(); };
+
+  async function expandZip(file) {
+    const zip = await JSZip.loadAsync(file);
+    const out = [];
+    for (const name of Object.keys(zip.files)) {
+      const z = zip.files[name];
+      if (z.dir || !/\.pdf$/i.test(name)) continue;
+      out.push({ name: name.split('/').pop(), data: await z.async('uint8array') });
+    }
+    return out;
+  }
+
+  async function readPdf(data) {
+    const doc = await pdfjsLib.getDocument({ data }).promise;
+    const pages = [];
+    for (let i = 1; i <= doc.numPages; i++) pages.push((await (await doc.getPage(i)).getTextContent()).items);
+    return pages;
+  }
+
+  async function handleFiles(files) {
+    const list = [];
+    for (const f of files) {
+      if (/\.zip$/i.test(f.name)) { try { list.push(...await expandZip(f)); } catch (e) { state.files.push({ name: f.name, status: 'err', msg: 'Không mở được file ZIP' }); } }
+      else if (/\.pdf$/i.test(f.name)) list.push({ name: f.name, file: f });
+      else if (/\.(7z|rar)$/i.test(f.name)) state.files.push({ name: f.name, status: 'err', msg: 'Trình duyệt không giải nén được .7z/.rar — hãy giải nén rồi chọn thư mục, hoặc nén lại dạng .zip' });
+    }
+    let done = 0;
+    for (const it of list) {
+      $('status').textContent = `Đang đọc ${it.name}…`;
+      try {
+        const data = it.data || new Uint8Array(await it.file.arrayBuffer());
+        const res = InvoiceParser.parseInvoice(await readPdf(data));
+        if (!res.ok) state.files.push({ name: it.name, status: 'skip', msg: res.reason });
+        else {
+          const key = `${res.kyHieu}-${res.no}`;
+          const dup = state.invoices.has(key);
+          res.file = it.name;
+          res.rows.forEach(r => { r.scax = /^45\d{8}$/.test(r.po) ? '' : r.po; r.scaf = /^45\d{8}$/.test(r.po) ? r.po : ''; r.mo = ''; r.k = ''; r.team = teamFor(r.ref); });
+          state.invoices.set(key, res);
+          state.files = state.files.filter(f => f.key !== key);
+          state.files.push({ name: it.name, key, status: res.warnings.length ? 'warn' : 'ok', msg: `HĐ số ${res.no} — ${res.rows.length} dòng — ${fmt(res.subtotal)} đ${dup ? ' (thay bản trùng)' : ''}`, warnings: res.warnings });
+        }
+      } catch (e) {
+        console.error(e);
+        state.files.push({ name: it.name, status: 'err', msg: 'Lỗi đọc PDF: ' + e.message });
+      }
+      done++; $('bar').style.width = (100 * done / list.length) + '%';
+    }
+    $('status').textContent = list.length ? `Xong ${done} file.` : '';
+    render();
+  }
+
+  // ---------- Render ----------
+  function sortedInvoices() { return [...state.invoices.values()].sort((a, b) => (a.no || 0) - (b.no || 0)); }
+  function render() {
+    const invs = sortedInvoices();
+    $('resultCard').hidden = !state.files.length;
+    let rows = 0, qty = 0, amt = 0;
+    invs.forEach(i => { rows += i.rows.length; i.rows.forEach(r => { qty += r.qty; amt += r.amount; }); });
+    $('sInv').textContent = invs.length; $('sRows').textContent = rows; $('sQty').textContent = fmt(qty); $('sAmt').textContent = fmt(amt);
+    $('exportBtn').disabled = !rows;
+
+    const fl = $('fileList'); fl.innerHTML = '';
+    const label = { ok: 'Đã đọc', warn: 'Cần kiểm tra', skip: 'Bỏ qua', err: 'Lỗi' };
+    const sorted = [...state.files].sort((a, b) => a.name.localeCompare(b.name));
+    const skipped = sorted.filter(f => f.status === 'skip');
+    sorted.filter(f => f.status !== 'skip').forEach(f => {
+      const d = document.createElement('div'); d.className = 'file';
+      d.innerHTML = `<span class="tag ${f.status === 'err' ? 'warn' : f.status}">${label[f.status]}</span><div><div>${esc(f.name)}</div><div class="muted">${esc(f.msg || '')}</div>${(f.warnings || []).length ? '<ul class="warnlist">' + f.warnings.map(w => '<li>' + esc(w) + '</li>').join('') + '</ul>' : ''}</div>`;
+      fl.appendChild(d);
+    });
+    if (skipped.length) {
+      const d = document.createElement('div'); d.className = 'file';
+      d.innerHTML = `<span class="tag skip">Bỏ qua ${skipped.length}</span><div><div class="muted">Không phải hóa đơn điện tử dạng chữ (bản scan / biên bản):</div><div>${skipped.map(f => esc(f.name)).join(' · ')}</div></div>`;
+      fl.appendChild(d);
+    }
+
+    const t = $('tbl');
+    const head = ['STT', 'HÓA ĐƠN', 'NGÀY', 'REF', 'SỐ LƯỢNG', 'GIÁ TIỀN', 'THÀNH TIỀN', 'PO SCAX', 'MO', 'PO SCAF', 'SỐ LƯỢNG (K)', 'TEAM'];
+    let html = '<thead><tr>' + head.map(h => `<th>${h}</th>`).join('') + '</tr></thead><tbody>';
+    invs.forEach(inv => inv.rows.forEach((r, idx) => {
+      html += `<tr class="${idx === 0 ? 'first' : ''}"><td class="n">${r.stt}</td><td>${inv.no}</td><td>${dstr(inv.date)}</td><td>${esc(r.ref)}</td>
+        <td class="n">${fmt(r.qty)}</td><td class="n">${fmt(r.price)}</td><td class="n">${fmt(r.qty * r.price)}</td>
+        <td><input data-k="scax" data-i="${inv.kyHieu}-${inv.no}" data-r="${idx}" value="${esc(r.scax)}"></td>
+        <td><input class="s" data-k="mo" data-i="${inv.kyHieu}-${inv.no}" data-r="${idx}" value="${esc(r.mo)}"></td>
+        <td>${esc(r.scaf)}</td>
+        <td><input class="s" data-k="k" data-i="${inv.kyHieu}-${inv.no}" data-r="${idx}" value="${esc(r.k)}"></td>
+        <td><input class="s" data-k="team" data-i="${inv.kyHieu}-${inv.no}" data-r="${idx}" value="${esc(r.team)}"></td></tr>`;
+    }));
+    t.innerHTML = html + '</tbody>';
+    t.querySelectorAll('input').forEach(inp => inp.oninput = () => {
+      const r = state.invoices.get(inp.dataset.i).rows[+inp.dataset.r];
+      r[inp.dataset.k] = inp.value;
+      if (inp.dataset.k === 'team') r.teamEdited = true;
+    });
+  }
+  function esc(s) { return String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+  function dstr(d) { return d ? `${String(d.d).padStart(2, '0')}/${String(d.m).padStart(2, '0')}/${d.y}` : ''; }
+
+  // ---------- Excel export ----------
+  $('exportBtn').onclick = async () => {
+    const tol = (parseFloat($('tol').value) || 0) / 100;
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Sheet1', { views: [{ state: 'frozen', ySplit: 1 }] });
+    const headers = ['STT', 'HÓA ĐƠN', 'NGÀY', 'REF', 'SỐ LƯỢNG', 'GIÁ TIỀN', 'THÀNH TIỀN', 'PO SCAX', 'MO ', 'PO SCAF', 'SỐ LƯỢNG', 'CHECK', 'CHÊNH ', 'TỶ LỆ ', 'TEAM'];
+    const widths = [6, 10, 12, 28, 12, 11, 15, 16, 10, 13, 12, 8, 10, 9, 10];
+    ws.addRow(headers);
+    widths.forEach((w, i) => ws.getColumn(i + 1).width = w);
+    const hdr = ws.getRow(1);
+    hdr.font = { bold: true }; hdr.alignment = { horizontal: 'center', vertical: 'middle' };
+    hdr.eachCell(c => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9E1F2' } }; c.border = { bottom: { style: 'thin' } }; });
+
+    let rn = 2;
+    const numOrStr = v => { const s = String(v ?? '').trim(); if (!s) return null; return /^\d+(\.\d+)?$/.test(s) ? Number(s) : s; };
+    const kNum = v => { const s = String(v ?? '').trim().replace(/\./g, '').replace(',', '.'); return s === '' ? null : (isNaN(+s) ? s : +s); };
+    sortedInvoices().forEach(inv => inv.rows.forEach(r => {
+      const row = ws.getRow(rn);
+      row.getCell(1).value = r.stt;
+      row.getCell(2).value = inv.no;
+      if (inv.date) { row.getCell(3).value = new Date(Date.UTC(inv.date.y, inv.date.m - 1, inv.date.d)); row.getCell(3).numFmt = 'dd/mm/yyyy'; }
+      row.getCell(4).value = r.ref;
+      row.getCell(5).value = r.qty;
+      row.getCell(6).value = r.price;
+      row.getCell(7).value = { formula: `E${rn}*F${rn}`, result: r.qty * r.price };
+      row.getCell(8).value = numOrStr(r.scax);
+      row.getCell(9).value = numOrStr(r.mo);
+      row.getCell(10).value = r.scaf ? Number(r.scaf) : null;
+      const k = kNum(r.k);
+      row.getCell(11).value = k;
+      row.getCell(12).value = { formula: `IF(K${rn}="","",IF(N${rn}<=${tol},"OK",""))` };
+      row.getCell(13).value = { formula: `IF(K${rn}="","",E${rn}-K${rn})` };
+      row.getCell(14).value = { formula: `IF(K${rn}="","",M${rn}/E${rn})` };
+      row.getCell(15).value = r.team || null;
+      [5, 7, 11, 13].forEach(c => row.getCell(c).numFmt = '#,##0');
+      row.getCell(6).numFmt = '#,##0';
+      row.getCell(14).numFmt = '0.0%';
+      rn++;
+    }));
+    ws.autoFilter = { from: 'A1', to: `O${rn - 1}` };
+
+    // Sheet đối chiếu tổng
+    const s2 = wb.addWorksheet('ĐỐI CHIẾU');
+    s2.addRow(['HÓA ĐƠN', 'KÝ HIỆU', 'NGÀY', 'NGƯỜI BÁN', 'FILE', 'SỐ DÒNG', 'TỔNG SL (HĐ)', 'CỘNG TIỀN HÀNG (HĐ)', 'TỔNG THÀNH TIỀN (Sheet1)', 'LỆCH', 'GHI CHÚ']).font = { bold: true };
+    [10, 10, 12, 30, 24, 9, 14, 20, 22, 10, 50].forEach((w, i) => s2.getColumn(i + 1).width = w);
+    let r2 = 2;
+    sortedInvoices().forEach(inv => {
+      const row = s2.getRow(r2);
+      row.values = [inv.no, inv.kyHieu, inv.date ? new Date(Date.UTC(inv.date.y, inv.date.m - 1, inv.date.d)) : null, inv.seller, inv.file, inv.rows.length, inv.totalQty, inv.subtotal,
+        { formula: `SUMIF(Sheet1!B:B,A${r2},Sheet1!G:G)` }, { formula: `I${r2}-H${r2}` }, inv.warnings.join(' | ')];
+      row.getCell(3).numFmt = 'dd/mm/yyyy';
+      [7, 8, 9, 10].forEach(c => row.getCell(c).numFmt = '#,##0');
+      r2++;
+    });
+
+    const buf = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = ($('fname').value.trim() || 'CHI TIET HOA DON') + '.xlsx';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  };
+
+  renderMap();
+  render();
+})();
+</script>
+</body>
+</html>
