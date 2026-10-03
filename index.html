@@ -64,6 +64,9 @@
   td input.fromsap { border-color: var(--ok); }
   td.chk { font-weight: 600; color: var(--ok); }
   td.chk.no { color: var(--warn); }
+  td.chk { white-space: nowrap; }
+  td.chk .pct { font-weight: 400; font-size: 12px; margin-left: 4px; }
+  td.chk:not(.no) .pct { color: var(--muted); }
   @media (max-width: 640px) { header, main { padding-left: 16px; padding-right: 16px; } }
 </style>
 </head>
@@ -146,6 +149,61 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="parser.js"></script>
+<script>
+/* Đọc lại file ZIP (xlsx) có Central Directory sai kích thước — thường gặp ở file xuất từ SAP.
+ * Quét tuần tự các Local File Header, giải nén bằng DecompressionStream, trả về {tên: Uint8Array}. */
+(function (root) {
+  'use strict';
+  async function inflateRaw(bytes) {
+    const ds = new DecompressionStream('deflate-raw');
+    const out = new Response(new Blob([bytes]).stream().pipeThrough(ds));
+    return new Uint8Array(await out.arrayBuffer());
+  }
+  function findSig(u8, from) {
+    for (let i = from; i < u8.length - 3; i++) {
+      if (u8[i] === 0x50 && u8[i + 1] === 0x4b && ((u8[i + 2] === 3 && u8[i + 3] === 4) || (u8[i + 2] === 1 && u8[i + 3] === 2))) return i;
+    }
+    return u8.length;
+  }
+  async function readLocalEntries(data) {
+    const u8 = data instanceof Uint8Array ? data : new Uint8Array(data);
+    const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+    const files = {};
+    let p = 0;
+    const dec = new TextDecoder();
+    while (p + 30 <= u8.length && dv.getUint32(p, true) === 0x04034b50) {
+      const flags = dv.getUint16(p + 6, true), method = dv.getUint16(p + 8, true);
+      let csize = dv.getUint32(p + 18, true);
+      const nlen = dv.getUint16(p + 26, true), xlen = dv.getUint16(p + 28, true);
+      const name = dec.decode(u8.subarray(p + 30, p + 30 + nlen));
+      const start = p + 30 + nlen + xlen;
+      let end, next;
+      if (csize > 0 && csize !== 0xffffffff) { end = start + csize; next = end; if (flags & 8) { next += dv.getUint32(next, true) === 0x08074b50 ? 16 : 12; } }
+      else {
+        // kích thước nằm trong data descriptor: tìm header kế tiếp
+        next = findSig(u8, start);
+        end = next - 16;
+        if (end >= start && dv.getUint32(end, true) === 0x08074b50) { /* có chữ ký descriptor */ }
+        else end = next - 12;
+        if (end < start) end = next;
+      }
+      const raw = u8.subarray(start, end);
+      if (!name.endsWith('/')) {
+        if (method === 0) files[name] = raw.slice();
+        else if (method === 8) files[name] = await inflateRaw(raw);
+        else throw new Error('Phương thức nén không hỗ trợ: ' + method);
+      }
+      p = next;
+      // bỏ qua byte rác cho tới header kế tiếp
+      if (p < u8.length && dv.getUint32(p, true) !== 0x04034b50) { const s = findSig(u8, p); if (s < u8.length && dv.getUint32(s, true) === 0x04034b50) p = s; else break; }
+    }
+    if (!Object.keys(files).length) throw new Error('Không đọc được nội dung ZIP');
+    return files;
+  }
+  const api = { readLocalEntries };
+  if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.ZipRepair = api;
+})(typeof window !== 'undefined' ? window : this);
+</script>
 <script>
 (() => {
   pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
@@ -257,8 +315,20 @@
   }
 
   // Excel: tự nhận diện file SAP inbound hay file mẫu đã xuất
-  function handleWorkbook(name, data) {
-    const wb = XLSX.read(data, { type: 'array', cellDates: false });
+  async function readWorkbook(data) {
+    try { return XLSX.read(data, { type: 'array', cellDates: false }); }
+    catch (err) {
+      // File xuất từ SAP đôi khi ghi sai kích thước trong mục lục ZIP → đọc lại từng phần rồi đóng gói lại
+      console.warn('XLSX.read lỗi, thử sửa ZIP:', err.message);
+      const files = await ZipRepair.readLocalEntries(data);
+      const z = new JSZip();
+      for (const [n, c] of Object.entries(files)) z.file(n, c);
+      const fixed = await z.generateAsync({ type: 'uint8array', compression: 'DEFLATE' });
+      return XLSX.read(fixed, { type: 'array', cellDates: false });
+    }
+  }
+  async function handleWorkbook(name, data) {
+    const wb = await readWorkbook(data);
     for (const sn of wb.SheetNames) {
       const aoa = XLSX.utils.sheet_to_json(wb.Sheets[sn], { header: 1, raw: true, defval: '' });
       const idx = InvoiceParser.buildSapIndex(aoa);
@@ -269,7 +339,7 @@
         state.sap.count = [...state.sap.byPo.values()].reduce((s, l) => s + l.length, 0);
         state.sap.names = [...state.sap.names.filter(n => n !== name), name];
         state.sap.name = state.sap.names.join(', ');
-        state.files = state.files.filter(f => !(f.kind === 'sap' && f.name === name));
+        state.files = state.files.filter(f => f.name !== name);
         state.files.push({ name, kind: 'sap', status: 'ok', msg: `Inbound SAP — ${idx.count} dòng, ${idx.byPo.size} PO` });
         return;
       }
@@ -324,7 +394,7 @@
       $('status').textContent = `Đang đọc ${done + 1}/${list.length}: ${it.name}…`;
       try {
         const data = it.data || new Uint8Array(await it.file.arrayBuffer());
-        if (/\.(xlsx|xls|csv)$/i.test(it.name)) handleWorkbook(it.name, data);
+        if (/\.(xlsx|xls|csv)$/i.test(it.name)) await handleWorkbook(it.name, data);
         else {
           const res = InvoiceParser.parseInvoice(await readPdf(data));
           if (!res.ok) state.files.push({ name: it.name, status: 'skip', msg: res.reason });
@@ -341,6 +411,7 @@
         }
       } catch (e) {
         console.error(e);
+        state.files = state.files.filter(f => !(f.name === it.name && f.status === 'err'));
         state.files.push({ name: it.name, status: 'err', msg: 'Lỗi đọc file: ' + e.message });
       }
       done++; $('bar').style.width = (100 * done / list.length) + '%';
@@ -360,6 +431,12 @@
       if (m.qty != null && !r.kManual) { r.k = String(m.qty); r.kFromSap = true; }
     });
   }
+  function devOf(r) {
+    const k = parseFloat(String(r.k).replace(/\./g, '').replace(',', '.'));
+    if (String(r.k).trim() === '' || isNaN(k) || !r.qty) return null;
+    return { diff: r.qty - k, pct: (r.qty - k) / r.qty };
+  }
+  const pctFmt = p => (p > 0 ? '+' : '') + (p * 100).toLocaleString('vi-VN', { minimumFractionDigits: 1, maximumFractionDigits: 2 }) + '%';
   function checkOf(r) {
     const k = parseFloat(String(r.k).replace(/\./g, '').replace(',', '.'));
     if (String(r.k).trim() === '' || isNaN(k) || !r.qty) return null;
@@ -416,6 +493,7 @@
     let html = '<thead><tr>' + head.map(h => `<th>${h}</th>`).join('') + '</tr></thead><tbody>';
     invs.forEach(inv => { const key = keyOf(inv); inv.rows.forEach((r, idx) => {
       const ck = checkOf(r);
+      const dv = devOf(r);
       const issue = ck === false || (r.sap && !['ok', 'none'].includes(r.sap.status)) || (r.sap && r.sap.note);
       if (only && !issue) return;
       const sl = r.sap ? SAP_LABEL[r.sap.status] : null;
@@ -425,7 +503,7 @@
         <td><input class="s" data-k="mo" data-i="${key}" data-r="${idx}" value="${esc(r.mo)}"></td>
         <td>${esc(r.scaf)}</td>
         <td><input class="s ${r.kFromSap && !r.kManual ? 'fromsap' : ''}" data-k="k" data-i="${key}" data-r="${idx}" value="${esc(r.k)}"></td>
-        <td class="chk ${ck === false ? 'no' : ''}">${ck == null ? '' : ck ? 'OK' : '✕'}</td>
+        <td class="chk ${ck === false ? 'no' : ''}" ${dv ? `title="Chênh (E − K): ${fmt(dv.diff)} = ${pctFmt(dv.pct)} số lượng HĐ"` : ''}>${ck == null ? '' : (ck ? 'OK' : '✕') + (dv && dv.diff !== 0 ? `<span class="pct">${pctFmt(dv.pct)}</span>` : '')}</td>
         <td><input class="s" data-k="team" data-i="${key}" data-r="${idx}" value="${esc(r.team)}"></td>
         <td>${sl && sl[1] ? `<span class="b ${sl[0]}">${sl[1]}</span>` : ''}</td>
         <td class="note">${esc(sapNote(r))}</td></tr>`;
