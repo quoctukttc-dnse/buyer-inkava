@@ -199,18 +199,24 @@
   ['dragenter', 'dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
   ['dragleave', 'drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
   drop.addEventListener('drop', async e => {
-    const items = [...(e.dataTransfer.items || [])];
+    // Lấy TẤT CẢ entry/file ngay lập tức (đồng bộ) — sau lệnh await đầu tiên trình duyệt sẽ xóa dataTransfer
+    const dt = e.dataTransfer;
+    const plainFiles = [...(dt.files || [])];
+    const entries = [...(dt.items || [])].map(it => (it.webkitGetAsEntry ? it.webkitGetAsEntry() : null)).filter(Boolean);
     const files = [];
     const walk = entry => new Promise(res => {
-      if (entry.isFile) entry.file(f => { files.push(f); res(); });
+      if (entry.isFile) entry.file(f => { files.push(f); res(); }, () => res());
       else if (entry.isDirectory) {
         const rd = entry.createReader(); const all = [];
-        const read = () => rd.readEntries(async ents => { if (!ents.length) { for (const en of all) await walk(en); res(); } else { all.push(...ents); read(); } });
+        const read = () => rd.readEntries(async ents => {
+          if (!ents.length) { for (const en of all) await walk(en); res(); }
+          else { all.push(...ents); read(); }
+        }, () => res());
         read();
       } else res();
     });
-    if (items.length && items[0].webkitGetAsEntry) { for (const it of items) { const en = it.webkitGetAsEntry(); if (en) await walk(en); } }
-    else files.push(...e.dataTransfer.files);
+    if (entries.length) { for (const en of entries) await walk(en); }
+    if (!files.length) files.push(...plainFiles);
     handleFiles(files);
   });
   $('clearBtn').onclick = () => { state.invoices.clear(); state.files = []; state.sap = null; render(); };
@@ -304,7 +310,9 @@
     state.files.push({ name, status: 'err', msg: 'Không nhận ra file Excel (cần file Inbound SAP có cột "Purchasing Document" hoặc file mẫu CHI TIẾT HÓA ĐƠN).' });
   }
 
-  async function handleFiles(files) {
+  let queue = Promise.resolve();
+  function handleFiles(files) { queue = queue.then(() => processFiles(files)).catch(console.error); return queue; }
+  async function processFiles(files) {
     const list = [];
     for (const f of files) {
       if (/\.zip$/i.test(f.name)) { try { list.push(...await expandZip(f)); } catch (e) { state.files.push({ name: f.name, status: 'err', msg: 'Không mở được file ZIP' }); } }
@@ -313,7 +321,7 @@
     }
     let done = 0;
     for (const it of list) {
-      $('status').textContent = `Đang đọc ${it.name}…`;
+      $('status').textContent = `Đang đọc ${done + 1}/${list.length}: ${it.name}…`;
       try {
         const data = it.data || new Uint8Array(await it.file.arrayBuffer());
         if (/\.(xlsx|xls|csv)$/i.test(it.name)) handleWorkbook(it.name, data);
