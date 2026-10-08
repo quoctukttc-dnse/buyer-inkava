@@ -79,10 +79,10 @@
   <section class="card">
     <div class="steps">
       <div class="step"><span class="num">1</span><div><b>Hóa đơn</b><br><span class="muted">Nạp PDF hóa đơn (hoặc .zip / thư mục) → tải Excel theo mẫu. Có thể nạp lại file Excel đã xuất.</span></div></div>
-      <div class="step"><span class="num">2</span><div><b>Inbound SAP</b><br><span class="muted">Dùng danh sách PO SCAF để tải báo cáo ZMME0032 (inbound) và báo cáo PO có số MO trên SAP, nạp vào đây → điền cột SỐ LƯỢNG (K), CHECK và MO.</span></div></div>
+      <div class="step"><span class="num">2</span><div><b>SAP ZMME0018</b><br><span class="muted">Dùng danh sách PO SCAF để tải báo cáo <b>ZMME0018</b> trên SAP, nạp vào đây → tự điền MO, SỐ LƯỢNG PO, Billed Q'ty, Remain Q'ty và CHECK.</span></div></div>
     </div>
     <div id="drop" class="drop" style="margin-top:14px">
-      <b>Kéo thả vào đây: PDF hóa đơn · ZIP · thư mục · Excel đã xuất · file Inbound SAP · báo cáo MO</b><br>
+      <b>Kéo thả vào đây: PDF hóa đơn · ZIP · thư mục · Excel đã xuất · file SAP ZMME0018</b><br>
       <span class="muted">Công cụ tự nhận diện loại file</span>
       <input id="fileInput" type="file" multiple accept=".pdf,.zip,.xlsx,.xls,.csv" hidden>
       <input id="dirInput" type="file" webkitdirectory hidden>
@@ -91,7 +91,7 @@
     <div class="row" style="margin-top:12px">
       <button id="pickFiles">Bước 1 · Chọn hóa đơn…</button>
       <button id="pickDir">Chọn thư mục…</button>
-      <button id="pickSap">Bước 2 · Nạp file SAP (inbound / MO)…</button>
+      <button id="pickSap">Bước 2 · Nạp file SAP ZMME0018…</button>
       <button id="clearBtn">Xóa hết</button>
       <span class="muted" id="status"></span>
     </div>
@@ -128,7 +128,7 @@
 
     <div class="sapbox" id="poBox">
       <div class="row" style="justify-content:space-between">
-        <div><b>PO SCAF cần tải inbound trên SAP</b> <span class="muted" id="poCount"></span></div>
+        <div><b>PO SCAF cần tải trên SAP (ZMME0018)</b> <span class="muted" id="poCount"></span></div>
         <button id="copyPo">Sao chép danh sách PO</button>
       </div>
       <textarea id="poList" readonly rows="3"></textarea>
@@ -290,14 +290,27 @@
     }
     if (h < 0) return null;
     const head = aoa[h].map(c => String(c || '').trim().toLowerCase());
-    const col = (...names) => { for (const n of names) { const i = head.indexOf(n.toLowerCase()); if (i >= 0) return i; } return -1; };
+    // cột trùng tên (vd ZMME0018 có 2 cột "Material Description") → chọn cột có nhiều dữ liệu nhất
+    const filled = c => { let n = 0; for (let i = h + 1; i < Math.min(aoa.length, h + 300); i++) if (String((aoa[i] || [])[c] ?? '').trim() !== '') n++; return n; };
+    const col = (...names) => {
+      for (const n of names) {
+        const idxs = head.map((x, i) => x === n.toLowerCase() ? i : -1).filter(i => i >= 0);
+        if (idxs.length === 1) return idxs[0];
+        if (idxs.length > 1) return idxs.sort((a, b) => filled(b) - filled(a))[0];
+      }
+      return -1;
+    };
+    // ZMME0018: Purchase Order Quantity / Remaining Quantity / Invoiced Quantity
+    // ZMME0032 (cũ): Quantity / Remain Quantity / Invoice Quantity
+    const is18 = head.includes('purchase order quantity');
     const C = {
       po: col('Purchasing Document'), ref: col('Supplier Ref'), desc: col('Material Description'),
-      qty: col('Quantity'), price: col('Gross Price'), delivered: col('Delivered Qty'), remain: col('Remain Quantity'),
-      invQty: col('Invoice Quantity'), supplier: col('Partner Name'), material: col('Material')
+      qty: is18 ? col('Purchase Order Quantity') : col('Quantity'), price: col('Gross Price'),
+      delivered: col('Goods Receipt Qty', 'Delivered Qty'), remain: col('Remaining Quantity', 'Remain Quantity'),
+      invQty: is18 ? col('Invoiced Quantity') : col('Invoice Quantity'), supplier: col('Supplier Name', 'Partner Name'),
+      material: col('Material'), mo: col('Reference')
     };
     if (C.po < 0 || C.qty < 0) return null;
-    if (head.includes('reference') && C.delivered < 0) return null; // đây là báo cáo MO, không phải inbound
     const byPo = new Map();
     let count = 0;
     for (let i = h + 1; i < aoa.length; i++) {
@@ -311,13 +324,14 @@
         qty: toNum(r[C.qty]) || 0, price: C.price >= 0 ? toNum(r[C.price]) : null,
         delivered: C.delivered >= 0 ? toNum(r[C.delivered]) : null, remain: C.remain >= 0 ? toNum(r[C.remain]) : null,
         invQty: C.invQty >= 0 ? toNum(r[C.invQty]) : null, supplier: C.supplier >= 0 ? String(r[C.supplier] ?? '') : '',
-        material: C.material >= 0 ? String(r[C.material] ?? '') : ''
+        material: C.material >= 0 ? String(r[C.material] ?? '') : '',
+        mo: C.mo >= 0 ? String(r[C.mo] ?? '').trim() : ''
       };
       if (!byPo.has(po)) byPo.set(po, []);
       byPo.get(po).push(it);
       count++;
     }
-    return { byPo, count };
+    return { byPo, count, source: is18 ? 'ZMME0018' : 'ZMME0032' };
   }
 
   /** row: {scaf|po, ref, price}. Trả về {status:'ok'|'po'|'none'|'nopo', qty, items, note} */
@@ -330,16 +344,17 @@
     let hit = list.filter(a => a.refN === r);
     let how = 'ok';
     if (!hit.length && r) hit = list.filter(a => a.refN && (a.refN.startsWith(r) || r.startsWith(a.refN) || a.descN.startsWith(r)));
-    if (!hit.length && list.length === 1) { hit = list; how = 'po'; }
+    // PO chỉ có 1 loại REF (vd nhiều size cùng 1 mã) → khớp theo PO
+    if (!hit.length && new Set(list.map(a => a.refN)).size === 1) { hit = list; how = 'po'; }
     if (!hit.length) return { status: 'noref', note: `PO có ${list.length} dòng trên SAP nhưng không khớp REF` };
     const qty = hit.reduce((s, a) => s + (a.qty || 0), 0);
     const notes = [];
-    if (how === 'po') notes.push(`Khớp theo PO (REF SAP: ${hit[0].ref || hit[0].desc})`);
-    if (hit.length > 1) notes.push(`Cộng ${hit.length} dòng SAP`);
+    if (how === 'po') notes.push(`REF SAP: ${hit[0].ref || hit[0].desc}`);
     const prices = [...new Set(hit.map(a => a.price).filter(p => p != null))];
     if (row.price != null && prices.length && prices.some(p => Math.abs(p - row.price) > 0.5)) notes.push(`Giá SAP ${prices.map(p => p.toLocaleString('vi-VN')).join('/')} ≠ giá HĐ ${Number(row.price).toLocaleString('vi-VN')}`);
     const remain = hit.reduce((s, a) => s + (a.remain || 0), 0);
-    return { status: how, qty, items: hit, remain, note: notes.join('; ') };
+    const billed = hit.reduce((s, a) => s + (a.invQty || 0), 0);
+    return { status: how, qty, items: hit, remain, billed, lines: hit.length, note: notes.join('; ') };
   }
 
   // ---------- Báo cáo PO có số MO (cột "Reference") ----------
@@ -387,7 +402,43 @@
     return { mo: mos.join(', '), note: mos.length > 1 ? `PO có ${mos.length} MO` : '' };
   }
 
-  const api = { parseInvoice, vnNum, groupLines, buildSapIndex, matchSap, normRef, buildMoIndex, matchMo };
+  // ---------- Khớp theo mã hàng (dòng HĐ chỉ có PO SCAX, vd LCB-3C8072- F2604578 ↔ SAP "Print S27: 8072 body") ----------
+  const trailingDigits = t => (String(t).match(/(\d{4,})$/) || [])[1] || '';
+  function styleKeysOfInvoiceRef(ref) {
+    return String(ref || '').toUpperCase().split(/[^A-Z0-9]+/)
+      .filter(t => t && !/^F\d{6,}$/.test(t) && !/^PO\d+$/.test(t))
+      .map(trailingDigits).filter(Boolean);
+  }
+  function styleKeysOfSap(it) {
+    const src = (it.ref || '') + ' ' + (it.desc || '');
+    return [...new Set((src.match(/\d{4,}/g) || []))];
+  }
+  /** row: {ref, price}. Tìm dòng SAP có mã hàng (số ≥4 chữ số) trùng với đuôi mã trong REF HĐ; ưu tiên đơn giá trùng. */
+  function matchSapByStyle(index, row) {
+    const keys = styleKeysOfInvoiceRef(row.ref);
+    if (!keys.length) return { status: 'nostyle', note: 'Không có PO SCAF và không nhận ra mã hàng trong REF' };
+    let cands = [];
+    for (const list of index.byPo.values()) for (const it of list) {
+      const sk = styleKeysOfSap(it);
+      // đuôi số của mã HĐ kết thúc bằng mã SAP (vd S58059 ↔ 8059, 3C8072 ↔ 8072)
+      const key = sk.find(k => keys.some(t => t === k || t.endsWith(k)));
+      if (key) cands.push({ it, key });
+    }
+    if (!cands.length) return { status: 'nostyle', note: `Không tìm thấy mã ${keys.join('/')} trong file SAP` };
+    const priceEq = c => row.price != null && c.it.price != null && Math.abs(c.it.price - row.price) <= 0.5;
+    if (cands.length > 1 && cands.some(priceEq)) cands = cands.filter(priceEq);
+    const pos = [...new Set(cands.map(c => c.it.po))];
+    const qty = cands.reduce((s, c) => s + (c.it.qty || 0), 0);
+    const names = [...new Set(cands.map(c => c.it.ref || c.it.desc))];
+    const notes = [`Mã ${cands[0].key} = "${names.join('" + "')}" (${cands.length} dòng SAP)`];
+    const prices = [...new Set(cands.map(c => c.it.price).filter(p => p != null))];
+    if (row.price != null && prices.length && prices.some(p => Math.abs(p - row.price) > 0.5)) notes.push(`Giá SAP ${prices.map(p => p.toLocaleString('vi-VN')).join('/')} ≠ giá HĐ ${Number(row.price).toLocaleString('vi-VN')}`);
+    const remain = cands.reduce((s, c) => s + (c.it.remain || 0), 0);
+    const billed = cands.reduce((s, c) => s + (c.it.invQty || 0), 0);
+    return { status: 'style', qty, remain, billed, lines: cands.length, po: pos.join(', '), items: cands.map(c => c.it), note: notes.join('; ') };
+  }
+
+  const api = { parseInvoice, vnNum, groupLines, buildSapIndex, matchSap, normRef, buildMoIndex, matchMo, matchSapByStyle, styleKeysOfInvoiceRef };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.InvoiceParser = api;
 })(typeof window !== 'undefined' ? window : this);
@@ -457,9 +508,16 @@
   const state = { invoices: new Map(), files: [], sap: null, mo: null }; // key: kyHieu-no
 
   // ---------- TEAM mapping ----------
-  const DEFAULT_MAP = [['ARN', 'ARENA'], ['KNIT', 'DEC'], ['WTI', 'DEC']];
+  const DEFAULT_MAP = [['ARN', 'ARENA'], ['KNIT', 'DEC'], ['WTI', 'DEC'], ['LCB', 'HADDAD'], ['AOMDODQ', 'HADDAD'], ['MANMADE', 'MANMADE'], ['PRINTING CARELABEL', 'MANMADE']];
   let teamMap;
-  try { teamMap = JSON.parse(localStorage.getItem('teamMap')) || DEFAULT_MAP; } catch (e) { teamMap = DEFAULT_MAP; }
+  try { teamMap = JSON.parse(localStorage.getItem('teamMap')) || DEFAULT_MAP.map(x => [...x]); } catch (e) { teamMap = DEFAULT_MAP.map(x => [...x]); }
+  // bổ sung quy tắc mặc định mới (một lần) cho người đã lưu bảng cũ
+  try {
+    if (localStorage.getItem('teamMapV') !== '2') {
+      for (const [p, t] of DEFAULT_MAP) if (!teamMap.some(x => (x[0] || '').toUpperCase() === p)) teamMap.push([p, t]);
+      localStorage.setItem('teamMap', JSON.stringify(teamMap)); localStorage.setItem('teamMapV', '2');
+    }
+  } catch (e) {}
   function saveMap() { try { localStorage.setItem('teamMap', JSON.stringify(teamMap)); } catch (e) {} }
   function renderMap() {
     const box = $('teamMap'); box.innerHTML = '';
@@ -576,16 +634,18 @@
     for (const sn of wb.SheetNames) {
       const aoa = XLSX.utils.sheet_to_json(wb.Sheets[sn], { header: 1, raw: true, defval: '' });
       const mi = InvoiceParser.buildMoIndex(aoa);
+      const idx = InvoiceParser.buildSapIndex(aoa);
       if (mi) {
         if (!state.mo) state.mo = { byPo: new Map(), count: 0, names: [] };
         for (const [po, list] of mi.byPo) state.mo.byPo.set(po, list);
         state.mo.count = [...state.mo.byPo.values()].reduce((s, l) => s + l.length, 0);
         state.mo.names = [...state.mo.names.filter(n => n !== name), name];
-        state.files = state.files.filter(f => f.name !== name);
-        state.files.push({ name, kind: 'mo', status: 'ok', msg: `Báo cáo MO — ${mi.count} dòng, ${mi.byPo.size} PO` });
-        return;
+        if (!idx) {
+          state.files = state.files.filter(f => f.name !== name);
+          state.files.push({ name, kind: 'mo', status: 'ok', msg: `Báo cáo MO — ${mi.count} dòng, ${mi.byPo.size} PO` });
+          return;
+        }
       }
-      const idx = InvoiceParser.buildSapIndex(aoa);
       if (idx) {
         // gộp nhiều file SAP: PO trong file mới thay thế PO cũ
         if (!state.sap) state.sap = { byPo: new Map(), count: 0, names: [] };
@@ -594,7 +654,8 @@
         state.sap.names = [...state.sap.names.filter(n => n !== name), name];
         state.sap.name = state.sap.names.join(', ');
         state.files = state.files.filter(f => f.name !== name);
-        state.files.push({ name, kind: 'sap', status: 'ok', msg: `Inbound SAP — ${idx.count} dòng, ${idx.byPo.size} PO` });
+        const what = idx.source === 'ZMME0018' ? `SAP ZMME0018 — ${idx.count} dòng, ${idx.byPo.size} PO (SL PO, Billed, Remain${mi ? ', MO' : ''})` : `SAP ZMME0032 (cũ) — ${idx.count} dòng, ${idx.byPo.size} PO`;
+        state.files.push({ name, kind: 'sap', status: 'ok', msg: what });
         return;
       }
     }
@@ -603,6 +664,12 @@
       const aoa = XLSX.utils.sheet_to_json(wb.Sheets[sn], { header: 1, raw: true, defval: '' });
       const h = aoa.findIndex(r => r && String(r[1]).trim().toUpperCase() === 'HÓA ĐƠN' && String(r[3]).trim().toUpperCase() === 'REF');
       if (h < 0) continue;
+      const H = aoa[h].map(x => String(x ?? '').trim().toUpperCase());
+      const hc = (...ns) => { for (const n of ns) { const i = H.indexOf(n.toUpperCase()); if (i >= 0) return i; } return -1; };
+      const cScax = hc('PO SCAX'), cMo = hc('MO'), cScaf = hc('PO SCAF'), cTeam = hc('TEAM');
+      const cK = hc('SỐ LƯỢNG PO') >= 0 ? hc('SỐ LƯỢNG PO') : H.indexOf('SỐ LƯỢNG', 5);
+      const cBilled = hc("BILLED Q'TY", 'BILLED QTY'), cRemain = hc("REMAIN Q'TY", 'REMAIN QTY');
+      const cell = (r, c) => c >= 0 ? String(r[c] ?? '').trim() : '';
       const invs = new Map();
       for (let i = h + 1; i < aoa.length; i++) {
         const r = aoa[i];
@@ -615,11 +682,11 @@
         else if (/(\d{1,2})\/(\d{1,2})\/(\d{4})/.test(String(dv))) { const m = String(dv).match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/); date = { d: +m[1], m: +m[2], y: +m[3] }; }
         if (!invs.has(no)) invs.set(no, { ok: true, no, kyHieu: '', date, seller: '', file: name, subtotal: null, totalQty: null, rows: [], warnings: [], fromXlsx: true });
         const qty = +r[4] || 0, price = +r[5] || 0;
-        const scaf = String(r[9] ?? '').trim();
+        const scaf = cell(r, cScaf);
         invs.get(no).rows.push({
           stt: +r[0] || invs.get(no).rows.length + 1, ref: String(r[3] ?? '').trim(), qty, price, amount: qty * price,
-          po: scaf || String(r[7] ?? '').trim(), scax: String(r[7] ?? '').trim(), mo: String(r[8] ?? '').trim(), scaf,
-          k: r[10] === '' || r[10] == null ? '' : String(r[10]), team: String(r[14] ?? '').trim(), teamEdited: !!String(r[14] ?? '').trim()
+          po: scaf || cell(r, cScax), scax: cell(r, cScax), mo: cell(r, cMo), scaf,
+          k: cell(r, cK), billed: cell(r, cBilled), remain: cell(r, cRemain), team: cell(r, cTeam), teamEdited: !!cell(r, cTeam)
         });
       }
       for (const inv of invs.values()) {
@@ -631,7 +698,7 @@
       state.files.push({ name, status: 'ok', msg: `File Excel đã xuất — ${invs.size} hóa đơn, ${[...invs.values()].reduce((s, i) => s + i.rows.length, 0)} dòng` });
       return;
     }
-    state.files.push({ name, status: 'err', msg: 'Không nhận ra file Excel (cần file Inbound SAP có cột "Purchasing Document" hoặc file mẫu CHI TIẾT HÓA ĐƠN).' });
+    state.files.push({ name, status: 'err', msg: 'Không nhận ra file Excel (cần file SAP ZMME0018 có cột "Purchasing Document" hoặc file mẫu CHI TIẾT HÓA ĐƠN).' });
   }
 
   let queue = Promise.resolve();
@@ -678,11 +745,23 @@
   // ---------- SAP matching ----------
   function applySap() {
     for (const inv of state.invoices.values()) inv.rows.forEach(r => {
+      if (r.scafFromSap) { r.scaf = ''; r.scafFromSap = false; }
       if (!state.sap) { r.sap = null; return; }
-      if (!r.scaf) { r.sap = { status: 'none', note: '' }; return; }
+      if (!r.scaf) {
+        // HĐ chỉ có PO SCAX → khớp theo mã hàng trong REF, điền luôn PO SCAF từ SAP
+        const m = InvoiceParser.matchSapByStyle(state.sap, r);
+        r.sap = m;
+        if (m.status === 'style') {
+          if (m.po && !m.po.includes(',')) { r.scaf = m.po; r.scafFromSap = true; }
+          if (!r.kManual) { r.k = String(m.qty); r.kFromSap = true; }
+          r.billed = m.billed ?? ''; r.remain = m.remain ?? '';
+        }
+        return;
+      }
       const m = InvoiceParser.matchSap(state.sap, r);
       r.sap = m;
       if (m.qty != null && !r.kManual) { r.k = String(m.qty); r.kFromSap = true; }
+      if (m.qty != null) { r.billed = m.billed ?? ''; r.remain = m.remain ?? ''; }
     });
     for (const inv of state.invoices.values()) inv.rows.forEach(r => {
       if (!state.mo || !r.scaf) { r.moMatch = null; return; }
@@ -703,7 +782,7 @@
     const tol = (parseFloat($('tol').value) || 0) / 100;
     return (r.qty - k) / r.qty <= tol + 1e-12;
   }
-  const SAP_LABEL = { ok: ['ok', 'Khớp'], po: ['po', 'Khớp theo PO'], noref: ['bad', 'Lệch REF'], nopo: ['bad', 'Chưa có trên SAP'], none: ['', 'PO SCAX'] };
+  const SAP_LABEL = { ok: ['ok', 'Khớp'], po: ['po', 'Khớp theo PO'], noref: ['bad', 'Lệch REF'], nopo: ['bad', 'Chưa có trên SAP'], none: ['', 'PO SCAX'], style: ['po', 'Khớp theo mã hàng'], nostyle: ['bad', 'Chưa khớp SAP'] };
   function sapNote(r) {
     const parts = [];
     if (r.moMatch && r.moMatch.note) parts.push(r.moMatch.note);
@@ -720,7 +799,7 @@
     const invs = sortedInvoices();
     $('resultCard').hidden = !state.files.length;
     let rows = 0, qty = 0, amt = 0, matched = 0, sapable = 0;
-    invs.forEach(i => { rows += i.rows.length; i.rows.forEach(r => { qty += r.qty; amt += r.amount; if (r.scaf) sapable++; if (r.sap && (r.sap.status === 'ok' || r.sap.status === 'po')) matched++; }); });
+    invs.forEach(i => { rows += i.rows.length; i.rows.forEach(r => { qty += r.qty; amt += r.amount; if (r.scaf || r.scax) sapable++; if (r.sap && ['ok', 'po', 'style'].includes(r.sap.status)) matched++; }); });
     $('sInv').textContent = invs.length; $('sRows').textContent = rows; $('sQty').textContent = fmt(qty); $('sAmt').textContent = fmt(amt);
     $('sSap').textContent = state.sap ? `${matched}/${sapable}` : '—';
     let moHas = 0; invs.forEach(i => i.rows.forEach(r => { if (r.scaf && r.mo) moHas++; }));
@@ -734,8 +813,8 @@
     $('poList').value = missing.join('\n');
     $('poCount').textContent = state.sap ? `— còn ${missing.length}/${pos.length} PO chưa có trong file SAP đã nạp` : `— ${pos.length} PO`;
     const moMissing = state.mo ? pos.filter(p => !state.mo.byPo.has(p)) : [];
-    $('moInfo').textContent = state.mo ? `Đã nạp báo cáo MO (${state.mo.names.join(', ')}): ${state.mo.byPo.size} PO. Điền MO cho ${moHas}/${sapable} dòng.` + (moMissing.length ? ` PO chưa có MO: ${moMissing.join(', ')}` : '') : 'Chưa nạp báo cáo MO (file EXPORT có cột "Reference" = số MO) — thả vào để tự điền cột MO.';
-    $('sapInfo').textContent = state.sap ? `Đã nạp ${state.sap.name}: ${state.sap.count} dòng, ${state.sap.byPo.size} PO. Khớp ${matched}/${sapable} dòng hóa đơn có PO SCAF.` : 'Chưa nạp file Inbound SAP. Dán danh sách PO trên vào SAP (ZMME0032), xuất Excel rồi nạp vào đây. Có thể nạp nhiều file SAP — dữ liệu được gộp.';
+    $('moInfo').textContent = state.mo ? `Đã nạp báo cáo MO (${state.mo.names.join(', ')}): ${state.mo.byPo.size} PO. Điền MO cho ${moHas}/${sapable} dòng.` + (moMissing.length ? ` PO chưa có MO: ${moMissing.join(', ')}` : '') : 'Chưa có số MO — file ZMME0018 (cột "Reference") sẽ tự điền cột MO.';
+    $('sapInfo').textContent = state.sap ? `Đã nạp ${state.sap.name}: ${state.sap.count} dòng, ${state.sap.byPo.size} PO. Khớp ${matched}/${sapable} dòng hóa đơn.` : 'Chưa nạp file SAP. Dán danh sách PO trên vào SAP (ZMME0018), xuất Excel rồi nạp vào đây. Có thể nạp nhiều file — dữ liệu được gộp.';
 
     const fl = $('fileList'); fl.innerHTML = '';
     const label = { ok: 'Đã đọc', warn: 'Cần kiểm tra', skip: 'Bỏ qua', err: 'Lỗi' };
@@ -754,12 +833,12 @@
 
     const only = $('onlyIssues').checked;
     const t = $('tbl');
-    const head = ['STT', 'HÓA ĐƠN', 'NGÀY', 'REF', 'SỐ LƯỢNG', 'GIÁ TIỀN', 'THÀNH TIỀN', 'PO SCAX', 'MO', 'PO SCAF', 'SỐ LƯỢNG (K)', 'CHECK', 'TEAM', 'SAP', 'GHI CHÚ'];
+    const head = ['STT', 'HÓA ĐƠN', 'NGÀY', 'REF', 'SỐ LƯỢNG', 'GIÁ TIỀN', 'THÀNH TIỀN', 'PO SCAX', 'MO', 'PO SCAF', 'SL PO (K)', 'BILLED', 'REMAIN', 'CHECK', 'TEAM', 'SAP', 'GHI CHÚ'];
     let html = '<thead><tr>' + head.map(h => `<th>${h}</th>`).join('') + '</tr></thead><tbody>';
     invs.forEach(inv => { const key = keyOf(inv); inv.rows.forEach((r, idx) => {
       const ck = checkOf(r);
       const dv = devOf(r);
-      const issue = ck === false || (r.sap && !['ok', 'none'].includes(r.sap.status)) || (r.sap && r.sap.note) || (state.mo && r.scaf && !r.mo) || (r.moMatch && r.moMatch.note);
+      const issue = ck === false || (r.sap && ['nopo', 'noref', 'nostyle'].includes(r.sap.status)) || (r.sap && /Giá SAP|Cộng/.test(r.sap.note || '')) || (state.mo && r.scaf && !r.mo) || (r.moMatch && r.moMatch.note);
       if (only && !issue) return;
       const sl = r.sap ? SAP_LABEL[r.sap.status] : null;
       html += `<tr class="${idx === 0 ? 'first' : ''}"><td class="n">${r.stt}</td><td>${inv.no}</td><td>${dstr(inv.date)}</td><td>${esc(r.ref)}</td>
@@ -768,6 +847,8 @@
         <td><input class="s ${r.moFromFile && !r.moManual ? 'fromsap' : ''}" data-k="mo" data-i="${key}" data-r="${idx}" value="${esc(r.mo)}"></td>
         <td>${esc(r.scaf)}</td>
         <td><input class="s ${r.kFromSap && !r.kManual ? 'fromsap' : ''}" data-k="k" data-i="${key}" data-r="${idx}" value="${esc(r.k)}"></td>
+        <td class="n">${r.billed === '' || r.billed == null ? '' : fmt(+r.billed)}</td>
+        <td class="n">${r.remain === '' || r.remain == null ? '' : fmt(+r.remain)}</td>
         <td class="chk ${ck === false ? 'no' : ''}" ${dv ? `title="Chênh (E − K): ${fmt(dv.diff)} = ${pctFmt(dv.pct)} số lượng HĐ"` : ''}>${ck == null ? '' : (ck ? 'OK' : '✕') + (dv && dv.diff !== 0 ? `<span class="pct">${pctFmt(dv.pct)}</span>` : '')}</td>
         <td><input class="s" data-k="team" data-i="${key}" data-r="${idx}" value="${esc(r.team)}"></td>
         <td>${sl && sl[1] ? `<span class="b ${sl[0]}">${sl[1]}</span>` : ''}</td>
@@ -792,17 +873,18 @@
     const tol = (parseFloat($('tol').value) || 0) / 100;
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('Sheet1', { views: [{ state: 'frozen', ySplit: 1 }] });
-    const headers = ['STT', 'HÓA ĐƠN', 'NGÀY', 'REF', 'SỐ LƯỢNG', 'GIÁ TIỀN', 'THÀNH TIỀN', 'PO SCAX', 'MO ', 'PO SCAF', 'SỐ LƯỢNG', 'CHECK', 'CHÊNH ', 'TỶ LỆ ', 'TEAM', 'GHI CHÚ SAP'];
-    const widths = [6, 10, 12, 28, 12, 11, 15, 16, 10, 13, 12, 8, 10, 9, 10, 40];
+    const headers = ['STT', 'HÓA ĐƠN', 'NGÀY', 'REF', 'SỐ LƯỢNG', 'GIÁ TIỀN', 'THÀNH TIỀN', 'PO SCAX', 'MO ', 'PO SCAF', 'SỐ LƯỢNG PO', "Billed Q'ty", "Remain Q'ty", 'CHECK', 'CHÊNH ', 'TỶ LỆ ', 'TEAM', 'GHI CHÚ SAP'];
+    const widths = [6, 10, 12, 28, 12, 11, 15, 12, 12, 13, 13, 12, 12, 8, 10, 9, 10, 45];
     ws.addRow(headers);
     widths.forEach((w, i) => ws.getColumn(i + 1).width = w);
     const hdr = ws.getRow(1);
-    hdr.font = { bold: true }; hdr.alignment = { horizontal: 'center', vertical: 'middle' };
-    hdr.eachCell(c => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9E1F2' } }; c.border = { bottom: { style: 'thin' } }; });
+    hdr.font = { bold: true }; hdr.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+    hdr.eachCell((c, i) => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: [11, 12, 13].includes(i) ? 'FFFCE4D6' : 'FFD9E1F2' } }; c.border = { bottom: { style: 'thin' } }; });
 
     let rn = 2;
     const numOrStr = v => { const s = String(v ?? '').trim(); if (!s) return null; return /^\d+(\.\d+)?$/.test(s) ? Number(s) : s; };
     const kNum = v => { const s = String(v ?? '').trim().replace(/\./g, '').replace(',', '.'); return s === '' ? null : (isNaN(+s) ? s : +s); };
+    const orange = { color: { argb: 'FFB54708' } };
     sortedInvoices().forEach(inv => inv.rows.forEach(r => {
       const row = ws.getRow(rn);
       row.getCell(1).value = r.stt;
@@ -815,20 +897,24 @@
       row.getCell(8).value = numOrStr(r.scax);
       row.getCell(9).value = numOrStr(r.mo);
       row.getCell(10).value = r.scaf ? Number(r.scaf) : null;
-      const k = kNum(r.k);
-      row.getCell(11).value = k;
-      row.getCell(12).value = { formula: `IF(K${rn}="","",IF(N${rn}<=${tol},"OK",""))` };
-      row.getCell(13).value = { formula: `IF(K${rn}="","",E${rn}-K${rn})` };
-      row.getCell(14).value = { formula: `IF(K${rn}="","",M${rn}/E${rn})` };
-      row.getCell(15).value = r.team || null;
-      if ((!r.sap || r.sap.status === 'none') && r.moMatch && r.moMatch.note) { row.getCell(16).value = r.moMatch.note; row.getCell(16).font = { color: { argb: 'FFB54708' } }; }
-      if (r.sap && r.sap.status !== 'none') { const lb = SAP_LABEL[r.sap.status][1]; const nt = sapNote(r); row.getCell(16).value = nt ? `${lb} | ${nt}` : lb; if (r.sap.status === 'nopo' || r.sap.status === 'noref' || r.sap.note) row.getCell(16).font = { color: { argb: 'FFB54708' } }; }
-      [5, 7, 11, 13].forEach(c => row.getCell(c).numFmt = '#,##0');
-      row.getCell(6).numFmt = '#,##0';
-      row.getCell(14).numFmt = '0.0%';
+      row.getCell(11).value = kNum(r.k);
+      row.getCell(12).value = kNum(r.billed);
+      row.getCell(13).value = kNum(r.remain);
+      row.getCell(14).value = { formula: `IF(K${rn}="","",IF(P${rn}<=${tol},"OK",""))` };
+      row.getCell(15).value = { formula: `IF(K${rn}="","",E${rn}-K${rn})` };
+      row.getCell(16).value = { formula: `IF(K${rn}="","",O${rn}/E${rn})` };
+      row.getCell(17).value = r.team || null;
+      if ((!r.sap || r.sap.status === 'none') && r.moMatch && r.moMatch.note) { row.getCell(18).value = r.moMatch.note; row.getCell(18).font = orange; }
+      if (r.sap && r.sap.status !== 'none') {
+        const lb = SAP_LABEL[r.sap.status][1]; const nt = sapNote(r);
+        row.getCell(18).value = nt ? `${lb} | ${nt}` : lb;
+        if (['nopo', 'noref', 'nostyle'].includes(r.sap.status) || /Giá SAP/.test(r.sap.note || '')) row.getCell(18).font = orange;
+      }
+      [5, 6, 7, 11, 12, 13, 15].forEach(c => row.getCell(c).numFmt = '#,##0');
+      row.getCell(16).numFmt = '0.0%';
       rn++;
     }));
-    ws.autoFilter = { from: 'A1', to: `P${rn - 1}` };
+    ws.autoFilter = { from: 'A1', to: `R${rn - 1}` };
 
     // Sheet đối chiếu tổng
     const s2 = wb.addWorksheet('ĐỐI CHIẾU');
