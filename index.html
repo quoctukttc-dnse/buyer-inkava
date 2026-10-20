@@ -79,10 +79,10 @@
   <section class="card">
     <div class="steps">
       <div class="step"><span class="num">1</span><div><b>Hóa đơn</b><br><span class="muted">Nạp PDF hóa đơn (hoặc .zip / thư mục) → tải Excel theo mẫu. Có thể nạp lại file Excel đã xuất.</span></div></div>
-      <div class="step"><span class="num">2</span><div><b>SAP ZMME0018</b><br><span class="muted">Dùng danh sách PO SCAF để tải báo cáo <b>ZMME0018</b> trên SAP, nạp vào đây → tự điền MO, SỐ LƯỢNG PO, Billed Q'ty, Remain Q'ty và CHECK.</span></div></div>
+      <div class="step"><span class="num">2</span><div><b>SAP ZMME0032</b><br><span class="muted">Dùng danh sách PO SCAF để tải <b>ZMME0032</b> trên SAP (số lượng PO, Delivered, Remain) và ZMME0018 nếu cần số MO, nạp vào đây → tự điền và CHECK.</span></div></div>
     </div>
     <div id="drop" class="drop" style="margin-top:14px">
-      <b>Kéo thả vào đây: PDF hóa đơn · ZIP · thư mục · Excel đã xuất · file SAP ZMME0018</b><br>
+      <b>Kéo thả vào đây: PDF hóa đơn · ZIP · thư mục · Excel đã xuất · file SAP ZMME0032 / ZMME0018</b><br>
       <span class="muted">Công cụ tự nhận diện loại file</span>
       <input id="fileInput" type="file" multiple accept=".pdf,.zip,.xlsx,.xls,.csv" hidden>
       <input id="dirInput" type="file" webkitdirectory hidden>
@@ -91,7 +91,7 @@
     <div class="row" style="margin-top:12px">
       <button id="pickFiles">Bước 1 · Chọn hóa đơn…</button>
       <button id="pickDir">Chọn thư mục…</button>
-      <button id="pickSap">Bước 2 · Nạp file SAP ZMME0018…</button>
+      <button id="pickSap">Bước 2 · Nạp file SAP (ZMME0032 / ZMME0018)…</button>
       <button id="clearBtn">Xóa hết</button>
       <span class="muted" id="status"></span>
     </div>
@@ -128,7 +128,7 @@
 
     <div class="sapbox" id="poBox">
       <div class="row" style="justify-content:space-between">
-        <div><b>PO SCAF cần tải trên SAP (ZMME0018)</b> <span class="muted" id="poCount"></span></div>
+        <div><b>PO SCAF cần tải trên SAP (ZMME0032)</b> <span class="muted" id="poCount"></span></div>
         <button id="copyPo">Sao chép danh sách PO</button>
       </div>
       <textarea id="poList" readonly rows="3"></textarea>
@@ -272,6 +272,15 @@
 
   // ---------- SAP inbound (ZMME0032) ----------
   const normRef = s => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  // Mã hàng dạng token: mùa (SS26, AW26, FW26…) + các nhóm số ≥5 chữ số (mã style, mã màu)
+  // → "351469- SS26" ≡ "KNIT-SS26-351469", "309423- SS26- 8790374" ≡ "WTI-SS26-309423-8790374"
+  const refTokens = s => {
+    const u = String(s || '').toUpperCase();
+    const seasons = u.match(/(?:SS|AW|FW|PS|SU|HO|SP|FA)\d{2}(?!\d)/g) || [];
+    const nums = u.match(/\d{5,}/g) || [];
+    return [...new Set([...seasons, ...nums])].sort();
+  };
+  const tokKey = s => refTokens(s).join('|');
   const toNum = v => {
     if (v == null || v === '') return null;
     if (typeof v === 'number') return v;
@@ -307,7 +316,8 @@
       po: col('Purchasing Document'), ref: col('Supplier Ref'), desc: col('Material Description'),
       qty: is18 ? col('Purchase Order Quantity') : col('Quantity'), price: col('Gross Price'),
       delivered: col('Goods Receipt Qty', 'Delivered Qty'), remain: col('Remaining Quantity', 'Remain Quantity'),
-      invQty: is18 ? col('Invoiced Quantity') : col('Invoice Quantity'), supplier: col('Supplier Name', 'Partner Name'),
+      // ZMME0032 không có cột 'đã xuất HĐ' riêng (Invoice Quantity luôn = Remain) → Billed lấy Delivered Qty
+      invQty: is18 ? col('Invoiced Quantity') : col('Delivered Qty'), supplier: col('Supplier Name', 'Partner Name'),
       material: col('Material'), mo: col('Reference')
     };
     if (C.po < 0 || C.qty < 0) return null;
@@ -343,6 +353,18 @@
     const r = normRef(row.ref);
     let hit = list.filter(a => a.refN === r);
     let how = 'ok';
+    if (!hit.length) {
+      const tk = refTokens(row.ref);
+      if (tk.some(t => /\d{5,}/.test(t))) {
+        const key = tk.join('|');
+        hit = list.filter(a => tokKey(a.ref || a.desc) === key);
+        if (!hit.length) {
+          // REF HĐ thiếu bớt token (vd không ghi mùa) → SAP chứa đủ token của HĐ, chỉ nhận khi chỉ 1 loại REF
+          const sub = list.filter(a => { const at = refTokens(a.ref || a.desc); return tk.every(t => at.includes(t)); });
+          if (new Set(sub.map(a => tokKey(a.ref || a.desc))).size === 1) hit = sub;
+        }
+      }
+    }
     if (!hit.length && r) hit = list.filter(a => a.refN && (a.refN.startsWith(r) || r.startsWith(a.refN) || a.descN.startsWith(r)));
     // PO chỉ có 1 loại REF (vd nhiều size cùng 1 mã) → khớp theo PO
     if (!hit.length && new Set(list.map(a => a.refN)).size === 1) { hit = list; how = 'po'; }
@@ -381,7 +403,7 @@
       const mo = String(r[cMo] ?? '').trim();
       if (!po || !mo) continue;
       if (!byPo.has(po)) byPo.set(po, []);
-      byPo.get(po).push({ refN: cRef >= 0 ? normRef(r[cRef]) : '', mo });
+      byPo.get(po).push({ refN: cRef >= 0 ? normRef(r[cRef]) : '', tk: cRef >= 0 ? tokKey(r[cRef]) : '', mo });
       count++;
     }
     return { byPo, count };
@@ -396,7 +418,8 @@
     let mos = [...new Set(list.map(a => a.mo))];
     if (mos.length > 1) {
       const r = normRef(row.ref);
-      const hit = [...new Set(list.filter(a => a.refN && (a.refN === r || a.refN.startsWith(r) || r.startsWith(a.refN))).map(a => a.mo))];
+      const key = tokKey(row.ref);
+      const hit = [...new Set(list.filter(a => a.refN && (a.refN === r || a.refN.startsWith(r) || r.startsWith(a.refN) || (key && a.tk === key))).map(a => a.mo))];
       if (hit.length) mos = hit;
     }
     return { mo: mos.join(', '), note: mos.length > 1 ? `PO có ${mos.length} MO` : '' };
@@ -438,7 +461,7 @@
     return { status: 'style', qty, remain, billed, lines: cands.length, po: pos.join(', '), items: cands.map(c => c.it), note: notes.join('; ') };
   }
 
-  const api = { parseInvoice, vnNum, groupLines, buildSapIndex, matchSap, normRef, buildMoIndex, matchMo, matchSapByStyle, styleKeysOfInvoiceRef };
+  const api = { parseInvoice, vnNum, groupLines, buildSapIndex, matchSap, normRef, buildMoIndex, matchMo, matchSapByStyle, styleKeysOfInvoiceRef, refTokens, tokKey };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.InvoiceParser = api;
 })(typeof window !== 'undefined' ? window : this);
@@ -649,12 +672,18 @@
       if (idx) {
         // gộp nhiều file SAP: PO trong file mới thay thế PO cũ
         if (!state.sap) state.sap = { byPo: new Map(), count: 0, names: [] };
-        for (const [po, list] of idx.byPo) state.sap.byPo.set(po, list);
+        // ZMME0032 được ưu tiên: PO đã có từ ZMME0032 không bị file ZMME0018 ghi đè số lượng
+        for (const [po, list] of idx.byPo) {
+          list.forEach(it => it.src = idx.source);
+          const cur = state.sap.byPo.get(po);
+          if (cur && cur[0] && cur[0].src === 'ZMME0032' && idx.source !== 'ZMME0032') continue;
+          state.sap.byPo.set(po, list);
+        }
         state.sap.count = [...state.sap.byPo.values()].reduce((s, l) => s + l.length, 0);
         state.sap.names = [...state.sap.names.filter(n => n !== name), name];
         state.sap.name = state.sap.names.join(', ');
         state.files = state.files.filter(f => f.name !== name);
-        const what = idx.source === 'ZMME0018' ? `SAP ZMME0018 — ${idx.count} dòng, ${idx.byPo.size} PO (SL PO, Billed, Remain${mi ? ', MO' : ''})` : `SAP ZMME0032 (cũ) — ${idx.count} dòng, ${idx.byPo.size} PO`;
+        const what = idx.source === 'ZMME0018' ? `SAP ZMME0018 — ${idx.count} dòng, ${idx.byPo.size} PO${mi ? ' (dùng lấy MO; số lượng chỉ dùng khi PO không có trong ZMME0032)' : ''}` : `SAP ZMME0032 — ${idx.count} dòng, ${idx.byPo.size} PO (SL PO = Quantity, Billed = Delivered Qty, Remain = Remain Quantity)`;
         state.files.push({ name, kind: 'sap', status: 'ok', msg: what });
         return;
       }
@@ -698,7 +727,7 @@
       state.files.push({ name, status: 'ok', msg: `File Excel đã xuất — ${invs.size} hóa đơn, ${[...invs.values()].reduce((s, i) => s + i.rows.length, 0)} dòng` });
       return;
     }
-    state.files.push({ name, status: 'err', msg: 'Không nhận ra file Excel (cần file SAP ZMME0018 có cột "Purchasing Document" hoặc file mẫu CHI TIẾT HÓA ĐƠN).' });
+    state.files.push({ name, status: 'err', msg: 'Không nhận ra file Excel (cần file SAP ZMME0032/ZMME0018 có cột "Purchasing Document" hoặc file mẫu CHI TIẾT HÓA ĐƠN).' });
   }
 
   let queue = Promise.resolve();
@@ -762,12 +791,23 @@
       r.sap = m;
       if (m.qty != null && !r.kManual) { r.k = String(m.qty); r.kFromSap = true; }
       if (m.qty != null) { r.billed = m.billed ?? ''; r.remain = m.remain ?? ''; }
+      // REF HĐ không có tiền tố (vd "351469- SS26") → lấy TEAM theo REF trên SAP (KNIT-SS26-351469 → DEC)
+      if (!r.teamEdited && !teamFor(r.ref) && m.items && m.items.length) r.team = teamFor(m.items[0].ref || m.items[0].desc) || r.team;
     });
     for (const inv of state.invoices.values()) inv.rows.forEach(r => {
       if (!state.mo || !r.scaf) { r.moMatch = null; return; }
       const m = InvoiceParser.matchMo(state.mo, r);
       r.moMatch = m;
       if (m && m.mo && !r.moManual) { r.mo = m.mo; r.moFromFile = true; }
+    });
+    // dòng trùng giữa các hóa đơn: cùng PO + cùng mã hàng + cùng số lượng
+    const seen = new Map();
+    for (const inv of sortedInvoices()) inv.rows.forEach(r => {
+      r.dupNote = '';
+      const po = r.scaf || r.scax; if (!po) return;
+      const key = po + '|' + (InvoiceParser.tokKey(r.ref) || InvoiceParser.normRef(r.ref)) + '|' + r.qty;
+      if (seen.has(key)) { const [a, b] = seen.get(key); r.dupNote = `Có thể trùng HĐ ${a} dòng ${b} (cùng PO, mã hàng, số lượng)`; }
+      else seen.set(key, [inv.no, r.stt]);
     });
   }
   function devOf(r) {
@@ -785,6 +825,7 @@
   const SAP_LABEL = { ok: ['ok', 'Khớp'], po: ['po', 'Khớp theo PO'], noref: ['bad', 'Lệch REF'], nopo: ['bad', 'Chưa có trên SAP'], none: ['', 'PO SCAX'], style: ['po', 'Khớp theo mã hàng'], nostyle: ['bad', 'Chưa khớp SAP'] };
   function sapNote(r) {
     const parts = [];
+    if (r.dupNote) parts.push(r.dupNote);
     if (r.moMatch && r.moMatch.note) parts.push(r.moMatch.note);
     if (!r.sap) return parts.join('; ');
     if (r.sap.status === 'nopo' || r.sap.status === 'noref') parts.push(r.sap.note);
@@ -813,8 +854,8 @@
     $('poList').value = missing.join('\n');
     $('poCount').textContent = state.sap ? `— còn ${missing.length}/${pos.length} PO chưa có trong file SAP đã nạp` : `— ${pos.length} PO`;
     const moMissing = state.mo ? pos.filter(p => !state.mo.byPo.has(p)) : [];
-    $('moInfo').textContent = state.mo ? `Đã nạp báo cáo MO (${state.mo.names.join(', ')}): ${state.mo.byPo.size} PO. Điền MO cho ${moHas}/${sapable} dòng.` + (moMissing.length ? ` PO chưa có MO: ${moMissing.join(', ')}` : '') : 'Chưa có số MO — file ZMME0018 (cột "Reference") sẽ tự điền cột MO.';
-    $('sapInfo').textContent = state.sap ? `Đã nạp ${state.sap.name}: ${state.sap.count} dòng, ${state.sap.byPo.size} PO. Khớp ${matched}/${sapable} dòng hóa đơn.` : 'Chưa nạp file SAP. Dán danh sách PO trên vào SAP (ZMME0018), xuất Excel rồi nạp vào đây. Có thể nạp nhiều file — dữ liệu được gộp.';
+    $('moInfo').textContent = state.mo ? `Đã nạp báo cáo MO (${state.mo.names.join(', ')}): ${state.mo.byPo.size} PO. Điền MO cho ${moHas}/${sapable} dòng.` + (moMissing.length ? ` PO chưa có MO: ${moMissing.join(', ')}` : '') : 'Chưa có số MO — ZMME0032 không có MO; thả thêm file ZMME0018 (cột "Reference") để tự điền cột MO.';
+    $('sapInfo').textContent = state.sap ? `Đã nạp ${state.sap.name}: ${state.sap.count} dòng, ${state.sap.byPo.size} PO. Khớp ${matched}/${sapable} dòng hóa đơn.` : 'Chưa nạp file SAP. Dán danh sách PO trên vào SAP (ZMME0032), xuất Excel rồi nạp vào đây. Có thể nạp nhiều file — dữ liệu được gộp.';
 
     const fl = $('fileList'); fl.innerHTML = '';
     const label = { ok: 'Đã đọc', warn: 'Cần kiểm tra', skip: 'Bỏ qua', err: 'Lỗi' };
@@ -838,7 +879,7 @@
     invs.forEach(inv => { const key = keyOf(inv); inv.rows.forEach((r, idx) => {
       const ck = checkOf(r);
       const dv = devOf(r);
-      const issue = ck === false || (r.sap && ['nopo', 'noref', 'nostyle'].includes(r.sap.status)) || (r.sap && /Giá SAP|Cộng/.test(r.sap.note || '')) || (state.mo && r.scaf && !r.mo) || (r.moMatch && r.moMatch.note);
+      const issue = ck === false || (r.sap && ['nopo', 'noref', 'nostyle'].includes(r.sap.status)) || (r.sap && /Giá SAP|Cộng/.test(r.sap.note || '')) || (state.mo && r.scaf && !r.mo) || (r.moMatch && r.moMatch.note) || !!r.dupNote;
       if (only && !issue) return;
       const sl = r.sap ? SAP_LABEL[r.sap.status] : null;
       html += `<tr class="${idx === 0 ? 'first' : ''}"><td class="n">${r.stt}</td><td>${inv.no}</td><td>${dstr(inv.date)}</td><td>${esc(r.ref)}</td>
@@ -908,7 +949,7 @@
       if (r.sap && r.sap.status !== 'none') {
         const lb = SAP_LABEL[r.sap.status][1]; const nt = sapNote(r);
         row.getCell(18).value = nt ? `${lb} | ${nt}` : lb;
-        if (['nopo', 'noref', 'nostyle'].includes(r.sap.status) || /Giá SAP/.test(r.sap.note || '')) row.getCell(18).font = orange;
+        if (['nopo', 'noref', 'nostyle'].includes(r.sap.status) || /Giá SAP/.test(r.sap.note || '') || r.dupNote) row.getCell(18).font = orange;
       }
       [5, 6, 7, 11, 12, 13, 15].forEach(c => row.getCell(c).numFmt = '#,##0');
       row.getCell(16).numFmt = '0.0%';
